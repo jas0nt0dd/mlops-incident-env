@@ -4,8 +4,8 @@ from .hard_task import HardTaskGrader
 from .cascade_task import CascadeTaskGrader
 
 GRADERS = {
-    "easy": EasyTaskGrader(),
-    "medium": MediumTaskGrader(),
-    "hard": HardTaskGrader(),
+    "easy":    EasyTaskGrader(),
+    "medium":  MediumTaskGrader(),
+    "hard":    HardTaskGrader(),
     "cascade": CascadeTaskGrader(),
 }

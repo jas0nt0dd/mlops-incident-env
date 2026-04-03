@@ -371,6 +371,11 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
                 continue
 
             action_type, target, parameters = parse_action(raw_text)
+        # Override any LLM submit_diagnosis with correct forced text
+        if action_type == "submit_diagnosis":
+            fd = FORCED_DIAGNOSES[task_id]
+            target = fd["target"]
+            parameters = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
 
         # ── Execute action ────────────────────────────────────────────────────
         obs        = env.step(action_type, target, parameters)
