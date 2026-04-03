@@ -1,4 +1,4 @@
-"""
+﻿"""
 app.py — FastAPI server for MLOps Incident Response Environment.
 
 OpenEnv HTTP protocol:
@@ -78,7 +78,7 @@ def health() -> Dict[str, str]:
 def reset(request: Optional[ResetRequest] = None) -> Dict[str, Any]:
     """Reset environment. validate-submission.sh pings this — must return 200."""
     task_id = request.task_id if request else "easy"
-    if task_id not in ("easy", "medium", "hard"):
+    if task_id not in ("easy", "medium", "hard", "cascade"):
         task_id = "easy"
     obs = env.reset(task_id=task_id)
     return obs.to_dict()
@@ -155,3 +155,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

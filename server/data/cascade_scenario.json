@@ -1,0 +1,113 @@
+{
+  "goal": "Three simultaneous failures have been reported after deployment v7.8.2 rolled out 40 minutes ago. Model accuracy dropped 22%, P99 latency spiked to 1200ms, and 15% of users are receiving inconsistent recommendations. Identify ALL root causes and propose a coordinated remediation plan.",
+  "alert_summary": "CRITICAL CASCADE: Multiple simultaneous failures detected post-deployment v7.8.2. Embedding service errors, feature store anomalies, and traffic routing inconsistencies all triggered within 5 minutes of each other.",
+  "root_cause": "cascade: embedding_service_v3 ONNX mismatch + feature_store cache TTL=0 + ab_test_router traffic split corruption",
+  "root_cause_keywords": ["embedding", "onnx", "feature_store", "cache", "ttl", "ab_test_router", "traffic split", "deployment v7.8.2"],
+  "sla_minutes": 60,
+  "sla_steps": 20,
+  "global_metrics": {
+    "model_accuracy": "0.61 (was 0.83 — dropped 22%)",
+    "p99_latency_ms": 1200,
+    "error_rate": "8.3%",
+    "users_affected": "~15% inconsistent recs",
+    "deployment_v7_8_2_rollout_time": "14:20 UTC",
+    "incident_detected": "14:25 UTC"
+  },
+  "components": {
+    "api_gateway": {
+      "status": "healthy",
+      "description": "Routes traffic to model serving layer. No config changes in v7.8.2.",
+      "last_updated": "2024-01-10",
+      "logs": [
+        {"time": "14:20 UTC", "level": "INFO", "msg": "Deployment v7.8.2 traffic gradually shifting."},
+        {"time": "14:25 UTC", "level": "WARN", "msg": "Upstream response latency increasing — 3 services affected."}
+      ],
+      "metrics": {"requests_per_sec": 8420, "error_rate": "0.1%", "p99_latency_ms": 12}
+    },
+    "embedding_service_v3": {
+      "status": "error",
+      "description": "Generates dense embeddings for user/item features. Upgraded to ONNX Runtime 1.17 in v7.8.2.",
+      "last_updated": "v7.8.2 deployment",
+      "logs": [
+        {"time": "14:21 UTC", "level": "ERROR", "msg": "ONNXRuntimeException: op 'MatMul' version mismatch — model exported with opset 17, runtime supports opset 15."},
+        {"time": "14:21 UTC", "level": "ERROR", "msg": "Embedding generation failed for 847 requests. Returning zero-vector fallback."},
+        {"time": "14:22 UTC", "level": "CRITICAL", "msg": "Zero-vector embeddings propagating to feature_store cache. Downstream models receiving corrupted inputs."},
+        {"time": "14:23 UTC", "level": "ERROR", "msg": "Model accuracy monitoring flagging rapid degradation — 0.83→0.71 in 90 seconds."}
+      ],
+      "metrics": {"embedding_success_rate": "0%", "avg_latency_ms": 2400, "fallback_rate": "100%"}
+    },
+    "feature_store": {
+      "status": "degraded",
+      "description": "Caches preprocessed features for real-time serving. Config change in v7.8.2: cache_ttl changed 300s → 0s.",
+      "last_updated": "v7.8.2 deployment",
+      "logs": [
+        {"time": "14:20 UTC", "level": "WARN", "msg": "cache_ttl set to 0s — all cache entries immediately expired. Cache miss rate: 100%."},
+        {"time": "14:21 UTC", "level": "WARN", "msg": "Serving stale features from fallback store (last updated: 14:19 UTC). All downstream models affected."},
+        {"time": "14:22 UTC", "level": "ERROR", "msg": "Feature freshness SLA breached. Stale features being served to 100% of requests."}
+      ],
+      "metrics": {"cache_hit_rate": "0%", "cache_ttl_seconds": 0, "stale_feature_rate": "100%", "avg_feature_age_seconds": 90}
+    },
+    "ab_test_router": {
+      "status": "error",
+      "description": "Routes traffic between Model A (production) and Model B (canary). Traffic split config corrupted in v7.8.2.",
+      "last_updated": "v7.8.2 deployment",
+      "logs": [
+        {"time": "14:20 UTC", "level": "ERROR", "msg": "Traffic split config invalid: model_a=0%, model_b=100%. Expected: model_a=90%, model_b=10%."},
+        {"time": "14:20 UTC", "level": "WARN", "msg": "100% of traffic now routed to model_b. model_b has not completed stress testing."},
+        {"time": "14:24 UTC", "level": "CRITICAL", "msg": "model_b serving degraded quality — not trained on post-Q3 data. User complaint rate spiking."}
+      ],
+      "metrics": {"model_a_traffic_pct": 0, "model_b_traffic_pct": 100, "expected_split": "90/10", "config_hash_mismatch": true}
+    },
+    "model_server": {
+      "status": "degraded",
+      "description": "Serves model inference. Degraded due to corrupted inputs from upstream (embedding_service + feature_store).",
+      "last_updated": "no changes in v7.8.2",
+      "logs": [
+        {"time": "14:22 UTC", "level": "WARN", "msg": "Receiving zero-vector embeddings from embedding_service. Prediction quality degraded."},
+        {"time": "14:23 UTC", "level": "WARN", "msg": "Feature freshness violations detected. Stale features in 100% of requests."}
+      ],
+      "metrics": {"inference_latency_p99_ms": 1200, "accuracy_estimate": 0.61, "zero_vector_input_rate": "62%"}
+    },
+    "monitoring_service": {
+      "status": "healthy",
+      "description": "Aggregates metrics and fires alerts. No changes in v7.8.2.",
+      "last_updated": "2024-01-08",
+      "logs": [
+        {"time": "14:25 UTC", "level": "ALERT", "msg": "Model accuracy dropped below SLA threshold 0.75. Current: 0.61."},
+        {"time": "14:26 UTC", "level": "ALERT", "msg": "P99 latency SLA breached. 1200ms > 500ms threshold."}
+      ],
+      "metrics": {"alerts_fired": 4, "sla_breaches": 2}
+    }
+  },
+  "config_diff": {
+    "service": "multiple",
+    "deployment_time": "14:20 UTC",
+    "author": "deploy-bot",
+    "pr_title": "v7.8.2: Upgrade ONNX runtime + cache optimization + AB router refactor",
+    "previous_config": {
+      "onnx_runtime_version": "1.15",
+      "feature_cache_ttl_seconds": 300,
+      "ab_split_model_a_pct": 90,
+      "ab_split_model_b_pct": 10
+    },
+    "current_config": {
+      "onnx_runtime_version": "1.17",
+      "feature_cache_ttl_seconds": 0,
+      "ab_split_model_a_pct": 0,
+      "ab_split_model_b_pct": 100
+    },
+    "note": "Three config parameters changed simultaneously in this deployment."
+  },
+  "reward_config": {
+    "relevant_components": ["embedding_service_v3", "feature_store", "ab_test_router"],
+    "key_evidence_logs": ["embedding_service_v3", "feature_store", "ab_test_router"],
+    "explore_relevant_reward": 0.05,
+    "find_key_evidence_reward": 0.10,
+    "find_config_diff_reward": 0.20,
+    "correct_diagnosis_reward": 0.50,
+    "partial_diagnosis_reward": 0.25,
+    "false_diagnosis_penalty": -0.10,
+    "loop_penalty": -0.15,
+    "step_over_max_penalty": -0.05
+  }
+}

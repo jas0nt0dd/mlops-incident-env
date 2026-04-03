@@ -29,7 +29,7 @@ MAX_STEPS        = 12
 FORCE_DIAGNOSE_AT = 10   # Force submit_diagnosis at this step if not done yet
 TEMPERATURE      = 0.1
 MAX_TOKENS       = 300
-TASKS            = ["easy", "medium", "hard"]
+TASKS            = ["easy", "medium", "hard", "cascade"]
 
 # Hardcoded best diagnosis per task — used when LLM runs out of budget or steps
 FORCED_DIAGNOSES = {
@@ -66,6 +66,20 @@ FORCED_DIAGNOSES = {
         "fix": (
             "Retrain model v4.2 on new user engagement distribution. "
             "Monitor PSI scores weekly. Pause experiment A441 until model is updated."
+        ),
+    },
+    "cascade": {
+        "target": "cascade_failure",
+        "root_cause": (
+            "Deployment v7.8.2 caused three simultaneous failures: "
+            "1) embedding_service_v3 ONNX runtime version mismatch corrupting embeddings, "
+            "2) feature_store cache TTL set to 0 serving stale features to all models, "
+            "3) ab_test_router traffic split corrupted routing 100% to untested model B."
+        ),
+        "fix": (
+            "Coordinated rollback of deployment v7.8.2 to restore previous configurations: "
+            "ONNX runtime 1.15, cache TTL 300s, traffic split 90/10. "
+            "Verify all services before re-deployment."
         ),
     },
 }
@@ -149,7 +163,7 @@ Available actions:
 {"action_type": "check_feature_drift", "target": "feature_store",    "parameters": {}}
 {"action_type": "submit_diagnosis",    "target": "<root_cause_name>", "parameters": {"root_cause": "<detailed explanation>", "fix": "<remediation plan>"}}
 
-Available components: data_pipeline_b, feature_preprocessor_v2, model_serving, user_engagement_features, api_gateway, feature_store
+Available components: data_pipeline_b, feature_preprocessor_v2, model_serving, user_engagement_features, api_gateway, feature_store, embedding_service_v3, ab_test_router, model_server, monitoring_service
 
 Investigation strategy:
 1. inspect each component — find which ones are DEGRADED or CRITICAL
@@ -246,6 +260,10 @@ def parse_action(text: str):
         "user_engagement_features": ["user_engagement", "engagement"],
         "feature_store":            ["feature_store", "feature store"],
         "api_gateway":              ["api_gateway", "gateway"],
+        "embedding_service_v3":     ["embedding_service", "embedding", "embedding_service_v3"],
+        "ab_test_router":           ["ab_test_router", "ab router", "router"],
+        "model_server":            ["model_server", "model server"],
+        "monitoring_service":       ["monitoring_service", "monitoring"],
     }
     found_action = "inspect"
     for act, kws in action_map.items():
@@ -283,6 +301,16 @@ FALLBACK_SEQUENCE = {
         ("query_logs",          "user_engagement_features",   {}),
         ("check_metrics",       "model_serving",              {}),
         ("inspect",             "model_serving",              {}),
+    ],
+    "cascade": [
+        ("inspect",          "embedding_service_v3", {}),
+        ("query_logs",       "embedding_service_v3", {}),
+        ("inspect",          "feature_store",        {}),
+        ("query_logs",       "feature_store",        {}),
+        ("compare_configs",  "feature_store",        {}),
+        ("inspect",          "ab_test_router",       {}),
+        ("query_logs",       "ab_test_router",       {}),
+        ("check_metrics",    "model_server",        {}),
     ],
 }
 
