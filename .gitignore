@@ -10,8 +10,12 @@ venv311/
 ENV/
 env/
 
-# Nested git repositories
+# Nested folders
 mlops-incident-env/
+
+# IDE and Tools
+.vscode/local
+.sixth/
 
 # IDE
 .vscode/

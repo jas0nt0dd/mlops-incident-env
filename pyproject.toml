@@ -1,104 +1,31 @@
 [build-system]
-requires = ["setuptools>=65.0", "wheel"]
+requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlops-incident-env"
 version = "1.0.0"
-description = "OpenEnv-compatible RL environment for MLOps incident response"
+description = "MLOps Incident Response Environment"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
-authors = [
-    {name = "MLOps Team", email = "team@example.com"},
-]
-
 dependencies = [
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.29.0",
-    "pydantic>=2.7.0",
-    "websockets>=12.0",
-    "openenv-core>=0.2.0",
+    "fastapi>=0.104.0",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.24.0",
+    "requests>=2.25.0",
+    "python-dotenv>=1.0.0",
     "openai>=1.0.0",
+    "openenv-core>=0.2.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "black>=23.0",
-    "ruff>=0.1.0",
-    "mypy>=1.0",
-    "pylint>=3.0",
-]
+[project.scripts]
+server = "server.app:main"
 
-[tool.setuptools]
-packages = ["mlops-incident-env"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["server*"]
 
-[tool.black]
-line-length = 99
-target-version = ['py310', 'py311', 'py312']
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
-
-[tool.isort]
-profile = "black"
-line_length = 99
-multi_line_mode = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
-
-[tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-check_untyped_defs = false
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-strict_optional = true
-
-[tool.pylint]
-max-line-length = 99
-[tool.pylint.messages_control]
-disable = [
-    "C0111",  # missing-docstring
-    "C0103",  # invalid-name
-    "R0913",  # too-many-arguments
-    "W0212",  # protected-access
-]
-
-[tool.ruff]
-line-length = 99
-target-version = "py310"
-select = [
-    "E",    # pycodestyle errors
-    "W",    # pycodestyle warnings
-    "F",    # Pyflakes
-    "I",    # isort
-    "C4",   # flake8-comprehensions
-    "UP",   # pyupgrade
-]
-ignore = [
-    "E501",  # line too long (handled by black)
-]
-
-[tool.ruff.per-file-ignores]
-"__init__.py" = ["F401"]
-"tests/*" = ["F841"]
+[tool.openenv]
+name = "mlops-incident-env"
+version = "1.0.0"
+description = "MLOps Incident Response RL Environment"

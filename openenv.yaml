@@ -1,0 +1,43 @@
+name: mlops-incident-env
+version: "1.0.0"
+description: >
+  A production-grade RL environment where AI agents act as on-call ML engineers,
+  diagnosing and resolving real-world machine learning system incidents.
+  Tasks range from simple data quality alerts (Easy) to complex silent model
+  drift detection (Hard). Built for the META x PyTorch OpenEnv Hackathon 2.0.
+author: your-hf-username
+homepage: https://huggingface.co/spaces/your-username/mlops-incident-env
+license: MIT
+
+tags:
+  - mlops
+  - production
+  - incident-response
+  - real-world
+  - model-monitoring
+
+tasks:
+  - id: easy
+    name: "Data Quality Alert"
+    difficulty: easy
+    max_steps: 10
+    description: >
+      Model accuracy dropped 18% in 2 hours. SLA breach imminent.
+      Find the data pipeline responsible for the degradation.
+
+  - id: medium
+    name: "Latency Spike Investigation"
+    difficulty: medium
+    max_steps: 15
+    description: >
+      P99 inference latency spiked from 45ms to 847ms. 23% of requests timing out.
+      Identify the bottleneck component and the configuration change that caused it.
+
+  - id: hard
+    name: "Silent Model Drift"
+    difficulty: hard
+    max_steps: 25
+    description: >
+      Revenue dropped 12% over 3 days. No error alerts. No obvious failures.
+      Detect the feature distribution shift causing silent model degradation
+      and produce a full remediation plan.
