@@ -16,18 +16,13 @@ diagnosing and resolving real-world machine learning system incidents.
 Built for the **META x PyTorch OpenEnv Hackathon**.
 
 ## Baseline Scores
-
-Evaluated using `llama-3.1-8b-instant` via Groq API:
-
-| Task        | Difficulty | Score      |
-|-------------|------------|------------|
-| easy        | Easy       | 1.0000     |
-| medium      | Medium     | 1.0000     |
-| hard        | Hard       | 1.0000     |
-| cascade     | Elite      | 1.0000     |
-| **Average** |            | **1.0000** |
-
-Scores reflect process-gated grading (v2). A random agent scores ~0.10 on cascade.
+| Task    | Score  | Difficulty |
+|---------|--------|------------|
+| easy    | 0.9500 | Easy       |
+| medium  | 1.0000 | Medium     |
+| hard    | 0.9000 | Hard       |
+| cascade | 1.0000 | Hard+      |
+| **AVERAGE** | **0.9625** | |
 
 ## API Endpoints
 
