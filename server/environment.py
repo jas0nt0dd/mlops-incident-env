@@ -146,6 +146,8 @@ class MLOpsEnvironment:
         )
 
     def step(self, action_type: str, target: str, parameters: Dict[str, Any]) -> ObsPayload:
+        # Normalize: accept both query_logs and querylogs, submit_diagnosis and submitdiagnosis
+        action_type = action_type.replace("_", "").replace("-", "").lower()
         self.state.step_count += 1
         action_key = f"{action_type}:{target}"
         self.state.investigation_path.append(action_key)

@@ -33,7 +33,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$DOCKER_BUILD_TIMEOUT = 600
 
 # Color codes
 $RED = "`e[0;31m"
