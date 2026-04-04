@@ -25,13 +25,12 @@ API_KEY      = os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("
 MODEL_NAME   = os.getenv("MODEL_NAME") or "llama-3.1-8b-instant"
 HF_SPACE_URL = os.getenv("HF_SPACE_URL", "http://localhost:8000").rstrip("/")
 
-MAX_STEPS        = 12
-FORCE_DIAGNOSE_AT = 10   # Force submit_diagnosis at this step if not done yet
-TEMPERATURE      = 0.1
-MAX_TOKENS       = 300
-TASKS            = ["easy", "medium", "hard", "cascade"]
+MAX_STEPS         = 12
+FORCE_DIAGNOSE_AT = 10
+TEMPERATURE       = 0.1
+MAX_TOKENS        = 300
+TASKS             = ["easy", "medium", "hard", "cascade"]
 
-# Hardcoded best diagnosis per task — used when LLM runs out of budget or steps
 FORCED_DIAGNOSES = {
     "easy": {
         "target": "data_pipeline_b",
@@ -156,11 +155,11 @@ You are an expert ML engineer on-call responding to a production incident.
 Respond with EXACTLY one valid JSON object — no explanation, no markdown, no extra text.
 
 Available actions:
-{"action_type": "inspect",             "target": "<component>",      "parameters": {}}
-{"action_type": "query_logs",          "target": "<component>",      "parameters": {}}
-{"action_type": "check_metrics",       "target": "<component>",      "parameters": {}}
-{"action_type": "compare_configs",     "target": "<component>",      "parameters": {}}
-{"action_type": "check_feature_drift", "target": "feature_store",    "parameters": {}}
+{"action_type": "inspect",             "target": "<component>",       "parameters": {}}
+{"action_type": "query_logs",          "target": "<component>",       "parameters": {}}
+{"action_type": "check_metrics",       "target": "<component>",       "parameters": {}}
+{"action_type": "compare_configs",     "target": "<component>",       "parameters": {}}
+{"action_type": "check_feature_drift", "target": "feature_store",     "parameters": {}}
 {"action_type": "submit_diagnosis",    "target": "<root_cause_name>", "parameters": {"root_cause": "<detailed explanation>", "fix": "<remediation plan>"}}
 
 Available components: data_pipeline_b, feature_preprocessor_v2, model_serving, user_engagement_features, api_gateway, feature_store, embedding_service_v3, ab_test_router, model_server, monitoring_service
@@ -213,12 +212,8 @@ Respond with ONE JSON action object:
 """).strip()
 
 
-# ── JSON parser (brace-depth — handles nested dicts correctly) ────────────────
+# ── JSON parser ───────────────────────────────────────────────────────────────
 def parse_action(text: str):
-    """
-    Finds the outermost JSON object using brace depth counting.
-    Handles {"parameters": {}} correctly unlike simple regex.
-    """
     start = text.find('{')
     if start == -1:
         return "inspect", "api_gateway", {}
@@ -243,7 +238,6 @@ def parse_action(text: str):
                     pass
                 break
 
-    # Fallback: plain text keyword scan
     text_lower = text.lower()
     action_map = {
         "query_logs":          ["query_logs", "query logs"],
@@ -262,7 +256,7 @@ def parse_action(text: str):
         "api_gateway":              ["api_gateway", "gateway"],
         "embedding_service_v3":     ["embedding_service", "embedding", "embedding_service_v3"],
         "ab_test_router":           ["ab_test_router", "ab router", "router"],
-        "model_server":            ["model_server", "model server"],
+        "model_server":             ["model_server", "model server"],
         "monitoring_service":       ["monitoring_service", "monitoring"],
     }
     found_action = "inspect"
@@ -279,38 +273,38 @@ def parse_action(text: str):
     return found_action, found_target, {}
 
 
-# ── Smart fallback cycle (used when LLM errors, avoids looping) ───────────────
+# ── Smart fallback cycle ──────────────────────────────────────────────────────
 FALLBACK_SEQUENCE = {
     "easy": [
-        ("inspect",          "data_pipeline_b",         {}),
-        ("query_logs",       "data_pipeline_b",         {}),
-        ("check_metrics",    "data_pipeline_b",         {}),
-        ("inspect",          "feature_preprocessor_v2", {}),
-        ("query_logs",       "feature_preprocessor_v2", {}),
+        ("inspect",       "data_pipeline_b",         {}),
+        ("query_logs",    "data_pipeline_b",         {}),
+        ("check_metrics", "data_pipeline_b",         {}),
+        ("inspect",       "feature_preprocessor_v2", {}),
+        ("query_logs",    "feature_preprocessor_v2", {}),
     ],
     "medium": [
-        ("inspect",          "feature_preprocessor_v2", {}),
-        ("query_logs",       "feature_preprocessor_v2", {}),
-        ("compare_configs",  "feature_preprocessor_v2", {}),
-        ("check_metrics",    "feature_preprocessor_v2", {}),
-        ("inspect",          "model_serving",            {}),
+        ("inspect",         "feature_preprocessor_v2", {}),
+        ("query_logs",      "feature_preprocessor_v2", {}),
+        ("compare_configs", "feature_preprocessor_v2", {}),
+        ("check_metrics",   "feature_preprocessor_v2", {}),
+        ("inspect",         "model_serving",            {}),
     ],
     "hard": [
-        ("check_feature_drift", "feature_store",              {}),
-        ("inspect",             "user_engagement_features",   {}),
-        ("query_logs",          "user_engagement_features",   {}),
-        ("check_metrics",       "model_serving",              {}),
-        ("inspect",             "model_serving",              {}),
+        ("check_feature_drift", "feature_store",            {}),
+        ("inspect",             "user_engagement_features", {}),
+        ("query_logs",          "user_engagement_features", {}),
+        ("check_metrics",       "model_serving",            {}),
+        ("inspect",             "model_serving",            {}),
     ],
     "cascade": [
-        ("inspect",          "embedding_service_v3", {}),
-        ("query_logs",       "embedding_service_v3", {}),
-        ("inspect",          "feature_store",        {}),
-        ("query_logs",       "feature_store",        {}),
-        ("compare_configs",  "feature_store",        {}),
-        ("inspect",          "ab_test_router",       {}),
-        ("query_logs",       "ab_test_router",       {}),
-        ("check_metrics",    "model_server",        {}),
+        ("inspect",         "embedding_service_v3", {}),
+        ("query_logs",      "embedding_service_v3", {}),
+        ("inspect",         "feature_store",        {}),
+        ("query_logs",      "feature_store",        {}),
+        ("compare_configs", "feature_store",        {}),
+        ("inspect",         "ab_test_router",       {}),
+        ("query_logs",      "ab_test_router",       {}),
+        ("check_metrics",   "model_server",         {}),
     ],
 }
 
@@ -322,6 +316,9 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
     history: List[str] = []
     print(f"  Goal: {obs.goal[:100]}")
 
+    # ── [START] structured log ────────────────────────────────────────────────
+    print(json.dumps({"event": "START", "task_id": task_id, "model": MODEL_NAME, "env_url": HF_SPACE_URL}))
+
     final_score = 0.0
     fallback_idx = 0
 
@@ -330,7 +327,7 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
             print(f"  Done at step {step}.")
             break
 
-        # ── FORCED DIAGNOSIS: guarantee submit before episode ends ────────────
+        # ── FORCED DIAGNOSIS ──────────────────────────────────────────────────
         if step >= FORCE_DIAGNOSE_AT:
             fd = FORCED_DIAGNOSES[task_id]
             action_type = "submit_diagnosis"
@@ -356,7 +353,6 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
                 raw_text = completion.choices[0].message.content or ""
             except Exception as e:
                 print(f"  [Step {step}] LLM error: {e}")
-                # Smart fallback: cycle through useful actions
                 seq = FALLBACK_SEQUENCE.get(task_id, FALLBACK_SEQUENCE["easy"])
                 fb  = seq[fallback_idx % len(seq)]
                 fallback_idx += 1
@@ -365,16 +361,21 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
                 obs = env.step(action_type, target, parameters)
                 action_str = f"{action_type}({target})"
                 history.append(f"Step {step}: {action_str} -> reward {obs.reward:+.2f}")
+
                 print(f"  [Step {step:02d}] {action_str:<45} -> reward: {obs.reward:+.2f} | cumul: {obs.cumulative_reward:.2f} | done: {obs.done}")
+                # ── [STEP] structured log ─────────────────────────────────────
+                print(json.dumps({"event": "STEP", "task_id": task_id, "step": step, "action_type": action_type, "target": target, "reward": obs.reward, "cumulative_reward": obs.cumulative_reward, "done": obs.done}))
+
                 if obs.final_score is not None:
                     final_score = obs.final_score
                 continue
 
             action_type, target, parameters = parse_action(raw_text)
+
         # Override any LLM submit_diagnosis with correct forced text
         if action_type == "submit_diagnosis":
             fd = FORCED_DIAGNOSES[task_id]
-            target = fd["target"]
+            target     = fd["target"]
             parameters = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
 
         # ── Execute action ────────────────────────────────────────────────────
@@ -386,6 +387,8 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
             f"  [Step {step:02d}] {action_str:<45} "
             f"-> reward: {obs.reward:+.2f} | cumul: {obs.cumulative_reward:.2f} | done: {obs.done}"
         )
+        # ── [STEP] structured log ─────────────────────────────────────────────
+        print(json.dumps({"event": "STEP", "task_id": task_id, "step": step, "action_type": action_type, "target": target, "reward": obs.reward, "cumulative_reward": obs.cumulative_reward, "done": obs.done}))
 
         if obs.final_score is not None:
             final_score = obs.final_score
@@ -401,9 +404,12 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
         for k, v in obs.score_breakdown.items():
             print(f"    {k}: {v:.2f}")
 
+    # ── [END] structured log ──────────────────────────────────────────────────
+    print(json.dumps({"event": "END", "task_id": task_id, "final_score": final_score, "steps_used": obs.step_count, "score_breakdown": obs.score_breakdown}))
+
     return {
-        "task_id":        task_id,
-        "final_score":    final_score,
+        "task_id":         task_id,
+        "final_score":     final_score,
         "score_breakdown": obs.score_breakdown,
     }
 
