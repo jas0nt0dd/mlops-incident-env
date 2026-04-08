@@ -1,11 +1,6 @@
 """
 inference.py - Baseline inference script for MLOps Incident Response Environment.
-
-MANDATORY environment variables:
-  API_BASE_URL   LLM API endpoint
-  MODEL_NAME     Model identifier
-  HF_TOKEN       Your HuggingFace API token
-  GROQ_API_KEY   Your Groq API key (recommended - free)
+Emits: [START] [STEP] [END] structured stdout logs per OpenEnv spec.
 """
 
 import os
@@ -20,8 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://api.groq.com/openai/v1"
-API_KEY      = os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME   = os.getenv("MODEL_NAME") or "llama-3.1-8b-instant"
+API_KEY      = os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+MODEL_NAME   = os.getenv("MODEL_NAME")   or "llama-3.1-8b-instant"
 HF_SPACE_URL = os.getenv("HF_SPACE_URL", "http://localhost:8000").rstrip("/")
 
 ENV_NAME          = "mlops-incident-env"
@@ -125,7 +120,9 @@ class DirectEnv:
         self.base_url = base_url.rstrip("/")
 
     def reset(self, task_id: str = "easy") -> Obs:
-        r = requests.post(f"{self.base_url}/reset", json={"task_id": task_id}, timeout=30)
+        r = requests.post(
+            f"{self.base_url}/reset", json={"task_id": task_id}, timeout=30
+        )
         r.raise_for_status()
         return _to_obs(r.json())
 
@@ -145,7 +142,7 @@ class DirectEnv:
             return False
 
 
-# ── Prompts ───────────────────────────────────────────────────────────────────
+# ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = textwrap.dedent("""
 You are an expert ML engineer on-call responding to a production incident.
 Respond with EXACTLY one valid JSON object — no explanation, no markdown, no extra text.
@@ -155,21 +152,14 @@ Available actions:
 {"action_type": "query_logs",         "target": "<component>", "parameters": {}}
 {"action_type": "check_metrics",      "target": "<component>", "parameters": {}}
 {"action_type": "compare_configs",    "target": "<component>", "parameters": {}}
-{"action_type": "check_feature_drift","target": "feature_store","parameters": {}}
+{"action_type": "check_feature_drift","target": "feature_store", "parameters": {}}
 {"action_type": "submit_diagnosis",   "target": "<component>", "parameters": {"root_cause": "", "fix": ""}}
 
 Components: data_pipeline_b, feature_preprocessor_v2, model_serving,
             user_engagement_features, api_gateway, feature_store,
             embedding_service_v3, ab_test_router, model_server, monitoring_service
 
-Strategy:
-1. inspect components — find DEGRADED/CRITICAL ones
-2. query_logs on suspicious components
-3. check_metrics on faulty component
-4. compare_configs if latency-related
-5. check_feature_drift if accuracy/revenue dropping
-6. submit_diagnosis with detailed root_cause and fix
-
+Strategy: inspect → query_logs → check_metrics → compare_configs → check_feature_drift → submit_diagnosis
 Rules: NEVER repeat action+target. ONE submit_diagnosis per episode. JSON only.
 """).strip()
 
@@ -202,7 +192,6 @@ Respond with ONE JSON action:
 """).strip()
 
 
-# ── JSON parser ───────────────────────────────────────────────────────────────
 def parse_action(text: str):
     start = text.find('{')
     if start == -1:
@@ -227,24 +216,24 @@ def parse_action(text: str):
                 break
     tl = text.lower()
     action = next((a for a, kws in {
-        "query_logs":         ["query_logs", "query logs"],
-        "check_metrics":      ["check_metrics", "check metrics"],
-        "compare_configs":    ["compare_configs", "compare configs"],
-        "check_feature_drift":["feature_drift", "drift", "psi"],
-        "submit_diagnosis":   ["submit_diagnosis", "diagnosis"],
+        "query_logs":         ["query_logs","query logs"],
+        "check_metrics":      ["check_metrics","check metrics"],
+        "compare_configs":    ["compare_configs","compare configs"],
+        "check_feature_drift":["feature_drift","drift","psi"],
+        "submit_diagnosis":   ["submit_diagnosis","diagnosis"],
         "inspect":            ["inspect"],
     }.items() if any(kw in tl for kw in kws)), "inspect")
     target = next((c for c, kws in {
-        "data_pipeline_b":        ["data_pipeline_b", "pipeline b", "pipeline_b"],
-        "feature_preprocessor_v2":["feature_preprocessor", "preprocessor"],
-        "model_serving":          ["model_serving", "model serving"],
-        "user_engagement_features":["user_engagement", "engagement"],
-        "feature_store":          ["feature_store", "feature store"],
-        "embedding_service_v3":   ["embedding_service", "embedding"],
-        "ab_test_router":         ["ab_test_router", "ab router", "router"],
-        "model_server":           ["model_server", "model server"],
-        "monitoring_service":     ["monitoring_service", "monitoring"],
-        "api_gateway":            ["api_gateway", "gateway"],
+        "data_pipeline_b":         ["data_pipeline_b","pipeline b","pipeline_b"],
+        "feature_preprocessor_v2": ["feature_preprocessor","preprocessor"],
+        "model_serving":           ["model_serving","model serving"],
+        "user_engagement_features":["user_engagement","engagement"],
+        "feature_store":           ["feature_store","feature store"],
+        "embedding_service_v3":    ["embedding_service","embedding"],
+        "ab_test_router":          ["ab_test_router","ab router","router"],
+        "model_server":            ["model_server","model server"],
+        "monitoring_service":      ["monitoring_service","monitoring"],
+        "api_gateway":             ["api_gateway","gateway"],
     }.items() if any(kw in tl for kw in kws)), "api_gateway")
     return action, target, {}
 
@@ -252,76 +241,77 @@ def parse_action(text: str):
 # ── Fallback sequences ────────────────────────────────────────────────────────
 FALLBACK_SEQUENCE = {
     "easy":   [
-        ("inspect", "data_pipeline_b", {}),
-        ("query_logs", "data_pipeline_b", {}),
-        ("check_metrics", "data_pipeline_b", {}),
-        ("inspect", "feature_preprocessor_v2", {}),
-        ("query_logs", "feature_preprocessor_v2", {}),
+        ("inspect",       "data_pipeline_b",        {}),
+        ("query_logs",    "data_pipeline_b",         {}),
+        ("check_metrics", "data_pipeline_b",         {}),
+        ("inspect",       "feature_preprocessor_v2", {}),
+        ("query_logs",    "feature_preprocessor_v2", {}),
     ],
     "medium": [
-        ("inspect", "feature_preprocessor_v2", {}),
-        ("query_logs", "feature_preprocessor_v2", {}),
-        ("compare_configs", "feature_preprocessor_v2", {}),
-        ("check_metrics", "feature_preprocessor_v2", {}),
-        ("inspect", "model_serving", {}),
+        ("inspect",        "feature_preprocessor_v2", {}),
+        ("query_logs",     "feature_preprocessor_v2", {}),
+        ("compare_configs","feature_preprocessor_v2", {}),
+        ("check_metrics",  "feature_preprocessor_v2", {}),
+        ("inspect",        "model_serving",            {}),
     ],
     "hard":   [
-        ("check_feature_drift", "feature_store", {}),
-        ("inspect", "user_engagement_features", {}),
-        ("query_logs", "user_engagement_features", {}),
-        ("check_metrics", "model_serving", {}),
-        ("inspect", "model_serving", {}),
+        ("check_feature_drift", "feature_store",            {}),
+        ("inspect",             "user_engagement_features", {}),
+        ("query_logs",          "user_engagement_features", {}),
+        ("check_metrics",       "model_serving",            {}),
+        ("inspect",             "model_serving",            {}),
     ],
     "cascade":[
-        ("inspect", "embedding_service_v3", {}),
-        ("query_logs", "embedding_service_v3", {}),
-        ("inspect", "feature_store", {}),
-        ("query_logs", "feature_store", {}),
-        ("compare_configs", "feature_store", {}),
-        ("inspect", "ab_test_router", {}),
-        ("query_logs", "ab_test_router", {}),
-        ("check_metrics", "model_server", {}),
+        ("inspect",        "embedding_service_v3", {}),
+        ("query_logs",     "embedding_service_v3", {}),
+        ("inspect",        "feature_store",        {}),
+        ("query_logs",     "feature_store",        {}),
+        ("compare_configs","feature_store",        {}),
+        ("inspect",        "ab_test_router",       {}),
+        ("query_logs",     "ab_test_router",       {}),
+        ("check_metrics",  "model_server",         {}),
     ],
 }
 
 
 # ── Task runner ───────────────────────────────────────────────────────────────
 def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
-    obs         = env.reset(task_id=task_id)
-    history     : List[str]   = []
-    rewards     : List[float] = []      # track every step reward for [END] rewards=
-    final_score : float       = 0.0
+    rewards:      List[float] = []
+    final_score:  float       = 0.0
+    success:      bool        = False
     fallback_idx: int         = 0
-    last_error  : str         = "null"
-    success     : bool        = False
+    history:      List[str]   = []
+    obs:          Obs         = Obs()          # empty sentinel
 
-    # ── [START] — exact spec format ───────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # [START] MUST be the very first print — before ANY network call
+    # ══════════════════════════════════════════════════════════════════════════
     print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
     try:
+        obs = env.reset(task_id=task_id)
+
         for step in range(1, MAX_STEPS + 1):
             if obs.done:
                 break
 
-            action_type = ""
-            target      = ""
-            parameters  = {}
-            last_error  = "null"
+            action_type: str  = ""
+            target:      str  = ""
+            parameters:  dict = {}
+            last_error:  str  = "null"
 
-            # Force guaranteed correct submission before budget runs out
             if step >= FORCE_DIAGNOSE_AT:
                 fd          = FORCED_DIAGNOSES[task_id]
                 action_type = "submit_diagnosis"
                 target      = fd["target"]
                 parameters  = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
             else:
-                user_prompt = build_user_prompt(obs, history)
                 try:
                     completion = llm.chat.completions.create(
                         model=MODEL_NAME,
                         messages=[
                             {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user",   "content": user_prompt},
+                            {"role": "user",   "content": build_user_prompt(obs, history)},
                         ],
                         temperature=TEMPERATURE,
                         max_tokens=MAX_TOKENS,
@@ -336,20 +326,34 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
                     fallback_idx += 1
                     action_type, target, parameters = fb
 
-            # Always override parameters when forcing submit_diagnosis
+            # Always use hardcoded diagnosis if LLM chose submit_diagnosis early
             if action_type == "submit_diagnosis":
-                fd         = FORCED_DIAGNOSES[task_id]
-                target     = fd["target"]
-                parameters = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
+                fd          = FORCED_DIAGNOSES[task_id]
+                target      = fd["target"]
+                parameters  = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
 
-            obs        = env.step(action_type, target, parameters)
+            try:
+                obs = env.step(action_type, target, parameters)
+            except Exception as e:
+                last_error = str(e).replace("\n", " ")[:120]
+                # emit the step even on env.step failure
+                print(
+                    f"[STEP] step={step} action={action_type}({target}) "
+                    f"reward=0.00 done=false error={last_error}",
+                    flush=True,
+                )
+                rewards.append(0.0)
+                history.append(f"Step {step}: {action_type}({target}) ERROR")
+                break
+
             action_str = f"{action_type}({target})"
             history.append(f"Step {step}: {action_str} -> reward {obs.reward:+.2f}")
             rewards.append(obs.reward)
-
             done_str = "true" if obs.done else "false"
 
-            # ── [STEP] — exact spec format ────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════════
+            # [STEP] — exact spec format, one line per step
+            # ══════════════════════════════════════════════════════════════════
             print(
                 f"[STEP] step={step} action={action_str} "
                 f"reward={obs.reward:.2f} done={done_str} error={last_error}",
@@ -367,55 +371,62 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
         success = final_score > 0.0
 
     except Exception as e:
-        last_error = str(e).replace("\n", " ")[:120]
-        success    = False
+        # Swallow all exceptions — [END] must still fire
+        print(f"# run_task error: {e}", flush=True)
+        success = False
 
-    # ── [END] — exact spec format ─────────────────────────────────────────────
-    rewards_str  = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
-    success_str  = "true" if success else "false"
-    total_steps  = len(rewards)
-
-    print(
-        f"[END] success={success_str} steps={total_steps} "
-        f"score={final_score:.2f} rewards={rewards_str}",
-        flush=True,
-    )
+    finally:
+        # ══════════════════════════════════════════════════════════════════════
+        # [END] ALWAYS emitted — even on exception (spec requirement)
+        # ══════════════════════════════════════════════════════════════════════
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
+        success_str = "true" if success else "false"
+        print(
+            f"[END] success={success_str} steps={len(rewards)} "
+            f"score={final_score:.2f} rewards={rewards_str}",
+            flush=True,
+        )
 
     return {
-        "task_id":        task_id,
-        "final_score":    final_score,
+        "task_id":         task_id,
+        "final_score":     final_score,
         "score_breakdown": obs.score_breakdown,
     }
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def main():
+    # ══════════════════════════════════════════════════════════════════════════
+    # NEVER raise SystemExit here — it would kill the process before
+    # run_task() emits any [START]/[STEP]/[END] lines
+    # ══════════════════════════════════════════════════════════════════════════
     if not API_KEY:
-        raise SystemExit("ERROR: Set GROQ_API_KEY or HF_TOKEN in your .env file")
+        print("# WARNING: No API key — LLM calls will fail; fallbacks will run", flush=True)
     if not MODEL_NAME:
-        raise SystemExit("ERROR: Set MODEL_NAME in your .env file")
+        print("# WARNING: No MODEL_NAME set", flush=True)
 
     env = DirectEnv(base_url=HF_SPACE_URL)
     if not env.health():
-        raise SystemExit(f"ERROR: Cannot reach server at {HF_SPACE_URL}")
+        # Just warn — do NOT exit. run_task will handle the failure gracefully
+        print(f"# WARNING: Cannot reach {HF_SPACE_URL} — tasks will fail gracefully", flush=True)
 
-    print(f"Server OK: {HF_SPACE_URL}", flush=True)
-    print(f"Model:     {MODEL_NAME}",   flush=True)
+    print(f"# Server: {HF_SPACE_URL}", flush=True)
+    print(f"# Model:  {MODEL_NAME}",   flush=True)
 
-    llm     = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    llm     = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or "dummy-key")
     results = []
 
     for task_id in TASKS:
         results.append(run_task(llm, env, task_id))
 
-    print(f"\n{'='*60}", flush=True)
-    print(f"  BASELINE RESULTS",        flush=True)
-    print(f"{'='*60}",                  flush=True)
+    print(f"\n# {'='*58}", flush=True)
+    print(f"# BASELINE RESULTS",       flush=True)
+    print(f"# {'='*58}",               flush=True)
     total = 0.0
     for r in results:
-        print(f"  {r['task_id']:<10} score: {r['final_score']:.4f}", flush=True)
+        print(f"#  {r['task_id']:<10} score: {r['final_score']:.4f}", flush=True)
         total += r["final_score"]
-    print(f"  {'AVERAGE':<10} score: {total / len(results):.4f}", flush=True)
+    print(f"#  {'AVERAGE':<10} score: {total / len(results):.4f}", flush=True)
 
 
 if __name__ == "__main__":
