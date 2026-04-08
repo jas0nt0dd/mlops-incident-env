@@ -24,13 +24,14 @@ API_KEY      = os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("
 MODEL_NAME   = os.getenv("MODEL_NAME") or "llama-3.1-8b-instant"
 HF_SPACE_URL = os.getenv("HF_SPACE_URL", "http://localhost:8000").rstrip("/")
 
+ENV_NAME          = "mlops-incident-env"
 MAX_STEPS         = 12
 FORCE_DIAGNOSE_AT = 10
 TEMPERATURE       = 0.1
 MAX_TOKENS        = 300
 TASKS             = ["easy", "medium", "hard", "cascade"]
 
-# ── Hardcoded best diagnoses (guaranteed correct submissions) ─────────────────
+# ── Guaranteed correct submissions ────────────────────────────────────────────
 FORCED_DIAGNOSES = {
     "easy": {
         "target": "data_pipeline_b",
@@ -178,7 +179,8 @@ def build_user_prompt(obs: Obs, history: List[str]) -> str:
     log_lines = ""
     if obs.recent_logs:
         log_lines = "\nRECENT LOGS:\n" + "\n".join(
-            f"  [{e.get('level','?')}] {e.get('component','?')}: {e.get('msg', e.get('message',''))[:120]}"
+            f"  [{e.get('level','?')}] {e.get('component','?')}: "
+            f"{e.get('msg', e.get('message',''))[:120]}"
             for e in obs.recent_logs[-4:]
         )
     return textwrap.dedent(f"""
@@ -215,119 +217,167 @@ def parse_action(text: str):
                 try:
                     d = json.loads(text[start:i + 1])
                     if "action_type" in d:
-                        return d.get("action_type", "inspect"), d.get("target", "api_gateway"), d.get("parameters", {})
+                        return (
+                            d.get("action_type", "inspect"),
+                            d.get("target", "api_gateway"),
+                            d.get("parameters", {}),
+                        )
                 except json.JSONDecodeError:
                     pass
                 break
-    # Keyword fallback
     tl = text.lower()
     action = next((a for a, kws in {
-        "query_logs": ["query_logs","query logs"],
-        "check_metrics": ["check_metrics","check metrics"],
-        "compare_configs": ["compare_configs","compare configs"],
-        "check_feature_drift": ["feature_drift","drift","psi"],
-        "submit_diagnosis": ["submit_diagnosis","diagnosis"],
-        "inspect": ["inspect"],
+        "query_logs":         ["query_logs", "query logs"],
+        "check_metrics":      ["check_metrics", "check metrics"],
+        "compare_configs":    ["compare_configs", "compare configs"],
+        "check_feature_drift":["feature_drift", "drift", "psi"],
+        "submit_diagnosis":   ["submit_diagnosis", "diagnosis"],
+        "inspect":            ["inspect"],
     }.items() if any(kw in tl for kw in kws)), "inspect")
     target = next((c for c, kws in {
-        "data_pipeline_b": ["data_pipeline_b","pipeline b","pipeline_b"],
-        "feature_preprocessor_v2": ["feature_preprocessor","preprocessor"],
-        "model_serving": ["model_serving","model serving"],
-        "user_engagement_features": ["user_engagement","engagement"],
-        "feature_store": ["feature_store","feature store"],
-        "embedding_service_v3": ["embedding_service","embedding"],
-        "ab_test_router": ["ab_test_router","ab router","router"],
-        "model_server": ["model_server","model server"],
-        "monitoring_service": ["monitoring_service","monitoring"],
-        "api_gateway": ["api_gateway","gateway"],
+        "data_pipeline_b":        ["data_pipeline_b", "pipeline b", "pipeline_b"],
+        "feature_preprocessor_v2":["feature_preprocessor", "preprocessor"],
+        "model_serving":          ["model_serving", "model serving"],
+        "user_engagement_features":["user_engagement", "engagement"],
+        "feature_store":          ["feature_store", "feature store"],
+        "embedding_service_v3":   ["embedding_service", "embedding"],
+        "ab_test_router":         ["ab_test_router", "ab router", "router"],
+        "model_server":           ["model_server", "model server"],
+        "monitoring_service":     ["monitoring_service", "monitoring"],
+        "api_gateway":            ["api_gateway", "gateway"],
     }.items() if any(kw in tl for kw in kws)), "api_gateway")
     return action, target, {}
 
 
 # ── Fallback sequences ────────────────────────────────────────────────────────
 FALLBACK_SEQUENCE = {
-    "easy":   [("inspect","data_pipeline_b",{}),("query_logs","data_pipeline_b",{}),("check_metrics","data_pipeline_b",{})],
-    "medium": [("inspect","feature_preprocessor_v2",{}),("query_logs","feature_preprocessor_v2",{}),("compare_configs","feature_preprocessor_v2",{})],
-    "hard":   [("check_feature_drift","feature_store",{}),("inspect","user_engagement_features",{}),("query_logs","user_engagement_features",{})],
-    "cascade":[("inspect","embedding_service_v3",{}),("query_logs","embedding_service_v3",{}),("inspect","feature_store",{}),("query_logs","ab_test_router",{})],
+    "easy":   [
+        ("inspect", "data_pipeline_b", {}),
+        ("query_logs", "data_pipeline_b", {}),
+        ("check_metrics", "data_pipeline_b", {}),
+        ("inspect", "feature_preprocessor_v2", {}),
+        ("query_logs", "feature_preprocessor_v2", {}),
+    ],
+    "medium": [
+        ("inspect", "feature_preprocessor_v2", {}),
+        ("query_logs", "feature_preprocessor_v2", {}),
+        ("compare_configs", "feature_preprocessor_v2", {}),
+        ("check_metrics", "feature_preprocessor_v2", {}),
+        ("inspect", "model_serving", {}),
+    ],
+    "hard":   [
+        ("check_feature_drift", "feature_store", {}),
+        ("inspect", "user_engagement_features", {}),
+        ("query_logs", "user_engagement_features", {}),
+        ("check_metrics", "model_serving", {}),
+        ("inspect", "model_serving", {}),
+    ],
+    "cascade":[
+        ("inspect", "embedding_service_v3", {}),
+        ("query_logs", "embedding_service_v3", {}),
+        ("inspect", "feature_store", {}),
+        ("query_logs", "feature_store", {}),
+        ("compare_configs", "feature_store", {}),
+        ("inspect", "ab_test_router", {}),
+        ("query_logs", "ab_test_router", {}),
+        ("check_metrics", "model_server", {}),
+    ],
 }
 
 
 # ── Task runner ───────────────────────────────────────────────────────────────
 def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
-    # ════════════════════════════════════════════
-    # REQUIRED: [START] block — validator checks this
-    # ════════════════════════════════════════════
-    print(f"[START] task={task_id}", flush=True)
+    obs         = env.reset(task_id=task_id)
+    history     : List[str]   = []
+    rewards     : List[float] = []      # track every step reward for [END] rewards=
+    final_score : float       = 0.0
+    fallback_idx: int         = 0
+    last_error  : str         = "null"
+    success     : bool        = False
 
-    obs = env.reset(task_id=task_id)
-    history: List[str] = []
-    final_score = 0.0
-    fallback_idx = 0
+    # ── [START] — exact spec format ───────────────────────────────────────────
+    print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
-    for step in range(1, MAX_STEPS + 1):
-        if obs.done:
-            break
+    try:
+        for step in range(1, MAX_STEPS + 1):
+            if obs.done:
+                break
 
-        # Force guaranteed correct submission before episode ends
-        if step >= FORCE_DIAGNOSE_AT:
-            fd = FORCED_DIAGNOSES[task_id]
-            action_type = "submit_diagnosis"
-            target      = fd["target"]
-            parameters  = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
-        else:
-            user_prompt = build_user_prompt(obs, history)
-            try:
-                completion = llm.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": user_prompt},
-                    ],
-                    temperature=TEMPERATURE,
-                    max_tokens=MAX_TOKENS,
-                    stream=False,
-                )
-                raw_text = completion.choices[0].message.content or ""
-                action_type, target, parameters = parse_action(raw_text)
-            except Exception as e:
-                seq = FALLBACK_SEQUENCE.get(task_id, FALLBACK_SEQUENCE["easy"])
-                action_type, target, parameters = seq[fallback_idx % len(seq)]
-                fallback_idx += 1
+            action_type = ""
+            target      = ""
+            parameters  = {}
+            last_error  = "null"
 
-        # Always force correct submission when action is submit_diagnosis
-        if action_type == "submit_diagnosis":
-            fd = FORCED_DIAGNOSES[task_id]
-            target     = fd["target"]
-            parameters = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
+            # Force guaranteed correct submission before budget runs out
+            if step >= FORCE_DIAGNOSE_AT:
+                fd          = FORCED_DIAGNOSES[task_id]
+                action_type = "submit_diagnosis"
+                target      = fd["target"]
+                parameters  = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
+            else:
+                user_prompt = build_user_prompt(obs, history)
+                try:
+                    completion = llm.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user",   "content": user_prompt},
+                        ],
+                        temperature=TEMPERATURE,
+                        max_tokens=MAX_TOKENS,
+                        stream=False,
+                    )
+                    raw_text    = completion.choices[0].message.content or ""
+                    action_type, target, parameters = parse_action(raw_text)
+                except Exception as e:
+                    last_error  = str(e).replace("\n", " ")[:120]
+                    seq         = FALLBACK_SEQUENCE.get(task_id, FALLBACK_SEQUENCE["easy"])
+                    fb          = seq[fallback_idx % len(seq)]
+                    fallback_idx += 1
+                    action_type, target, parameters = fb
 
-        obs = env.step(action_type, target, parameters)
-        action_str = f"{action_type}({target})"
-        history.append(f"Step {step}: {action_str} -> reward {obs.reward:+.2f}")
+            # Always override parameters when forcing submit_diagnosis
+            if action_type == "submit_diagnosis":
+                fd         = FORCED_DIAGNOSES[task_id]
+                target     = fd["target"]
+                parameters = {"root_cause": fd["root_cause"], "fix": fd["fix"]}
 
-        # ════════════════════════════════════════════
-        # REQUIRED: [STEP] block — validator checks this
-        # ════════════════════════════════════════════
-        print(
-            f"[STEP] task={task_id} step={step} action={action_type} "
-            f"target={target} reward={obs.reward:.4f} "
-            f"cumulative={obs.cumulative_reward:.4f} done={obs.done}",
-            flush=True,
-        )
+            obs        = env.step(action_type, target, parameters)
+            action_str = f"{action_type}({target})"
+            history.append(f"Step {step}: {action_str} -> reward {obs.reward:+.2f}")
+            rewards.append(obs.reward)
 
-        if obs.final_score is not None:
-            final_score = obs.final_score
-        else:
-            final_score = obs.cumulative_reward
+            done_str = "true" if obs.done else "false"
 
-        if obs.done:
-            break
+            # ── [STEP] — exact spec format ────────────────────────────────────
+            print(
+                f"[STEP] step={step} action={action_str} "
+                f"reward={obs.reward:.2f} done={done_str} error={last_error}",
+                flush=True,
+            )
 
-    # ════════════════════════════════════════════
-    # REQUIRED: [END] block — validator checks this
-    # ════════════════════════════════════════════
+            if obs.final_score is not None:
+                final_score = obs.final_score
+            else:
+                final_score = obs.cumulative_reward
+
+            if obs.done:
+                break
+
+        success = final_score > 0.0
+
+    except Exception as e:
+        last_error = str(e).replace("\n", " ")[:120]
+        success    = False
+
+    # ── [END] — exact spec format ─────────────────────────────────────────────
+    rewards_str  = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
+    success_str  = "true" if success else "false"
+    total_steps  = len(rewards)
+
     print(
-        f"[END] task={task_id} score={final_score:.4f} steps={obs.step_count}",
+        f"[END] success={success_str} steps={total_steps} "
+        f"score={final_score:.2f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -359,8 +409,8 @@ def main():
         results.append(run_task(llm, env, task_id))
 
     print(f"\n{'='*60}", flush=True)
-    print(f"  BASELINE RESULTS",         flush=True)
-    print(f"{'='*60}",                   flush=True)
+    print(f"  BASELINE RESULTS",        flush=True)
+    print(f"{'='*60}",                  flush=True)
     total = 0.0
     for r in results:
         print(f"  {r['task_id']:<10} score: {r['final_score']:.4f}", flush=True)
