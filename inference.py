@@ -381,9 +381,14 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
         # ══════════════════════════════════════════════════════════════════════
         rewards_str = ",".join(f"{r:.2f}" for r in rewards) if rewards else "0.00"
         success_str = "true" if success else "false"
+
+        # ── FIX: clamp strictly (0,1) exclusive BEFORE formatting ──────────
+        final_score = round(min(max(final_score, 0.0001), 0.9999), 4)
+
+        # ── FIX: use :.4f so 0.9999 prints as "0.9999" not "1.00" ───────────
         print(
             f"[END] success={success_str} steps={len(rewards)} "
-            f"score={final_score:.2f} rewards={rewards_str}",
+            f"score={final_score:.4f} rewards={rewards_str}",
             flush=True,
         )
 
