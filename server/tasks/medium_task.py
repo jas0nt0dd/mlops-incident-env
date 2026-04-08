@@ -63,4 +63,4 @@ class MediumTaskGrader:
         breakdown["efficiency_bonus"] = round(eff, 4)
         score += eff
 
-        return {"total": round(min(max(score, 0.0), 1.0), 4), "breakdown": breakdown}
+        return {"total": round(min(max(score, 0.0001), 0.9999), 4), "breakdown": breakdown}

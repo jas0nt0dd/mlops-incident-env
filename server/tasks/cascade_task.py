@@ -94,4 +94,4 @@ class CascadeTaskGrader:
             score = min(score, 0.70)
 
         breakdown["causes_found"] = float(causes_found)
-        return {"total": round(min(max(score, 0.0), 1.0), 4), "breakdown": breakdown}
+        return {"total": round(min(max(score, 0.0001), 0.9999), 4), "breakdown": breakdown}

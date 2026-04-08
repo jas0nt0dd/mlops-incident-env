@@ -68,4 +68,4 @@ class HardTaskGrader:
         else:
             breakdown["wrong_feature_penalty"] = 0.0
 
-        return {"total": round(min(max(score, 0.0), 1.0), 4), "breakdown": breakdown}
+        return {"total": round(min(max(score, 0.0001), 0.9999), 4), "breakdown": breakdown}

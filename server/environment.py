@@ -330,10 +330,7 @@ class MLOpsEnvironment:
 
         self.state.diagnosis_submitted = True
 
-        try:
-            from server.tasks import GRADERS
-        except ImportError:
-            from tasks import GRADERS
+        from tasks import GRADERS
 
         # Pass investigation context to grader for process-gated scoring
         result = GRADERS[self.state.task_id].grade(
@@ -341,7 +338,8 @@ class MLOpsEnvironment:
             investigation_path=self.state.investigation_path,
             step_count=self.state.step_count,
         )
-        final_score = result["total"]
+        # Clamp strictly within (0, 1) exclusive — OpenEnv validator requires this
+        final_score = round(min(max(result["total"], 0.0001), 0.9999), 4)
         breakdown = result["breakdown"]
 
         if final_score >= 0.9:
