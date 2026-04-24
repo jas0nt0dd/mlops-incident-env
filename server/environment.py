@@ -393,12 +393,19 @@ class MLOpsEnvironment:
 
         # Route to the correct task grader
         task_id = self.state.task_id
+        root_cause_keywords = self.state.root_cause_keywords
+        grader_context = {
+            "root_cause_keywords": root_cause_keywords,
+            "broken_component": root_cause_keywords[0] if root_cause_keywords else None,
+            "config_diff": self.scenario.get("config_diff"),
+        }
         if task_id == "easy":
             from tasks.easy_task import EasyTaskGrader
             result = EasyTaskGrader().grade(
                 target, parameters,
                 self.state.investigation_path,
                 self.state.step_count,
+                **grader_context,
             )
         elif task_id == "medium":
             from tasks.medium_task import MediumTaskGrader
@@ -406,6 +413,7 @@ class MLOpsEnvironment:
                 target, parameters,
                 self.state.investigation_path,
                 self.state.step_count,
+                **grader_context,
             )
         elif task_id == "hard":
             from tasks.hard_task import HardTaskGrader
@@ -413,6 +421,7 @@ class MLOpsEnvironment:
                 target, parameters,
                 self.state.investigation_path,
                 self.state.step_count,
+                **grader_context,
             )
         elif task_id == "cascade":
             from tasks.cascade_task import CascadeTaskGrader
@@ -420,6 +429,7 @@ class MLOpsEnvironment:
                 target, parameters,
                 self.state.investigation_path,
                 self.state.step_count,
+                **grader_context,
             )
         else:
             result = {"total": 0.0, "breakdown": {}}

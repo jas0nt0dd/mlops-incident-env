@@ -25,44 +25,126 @@ Scoring (max 1.0) — must demonstrate cross-system synthesis:
 from __future__ import annotations
 from typing import Any, Dict, List
 
+from .grading_utils import breakdown_label, contains_any, contains_term, normalize_text
+
 
 class CascadeTaskGrader:
 
     def grade(self, diagnosis_target: str, diagnosis_params: Dict[str, Any],
-              investigation_path: List[str] | None = None, step_count: int | None = None) -> Dict[str, Any]:
-        text = (str(diagnosis_target) + " " + str(diagnosis_params)).lower().replace("_", " ").replace("-", " ")
-        path = [p.lower() for p in (investigation_path or [])]
+              investigation_path: List[str] | None = None, step_count: int | None = None,
+              root_cause_keywords: List[str] | None = None,
+              broken_component: str | None = None,
+              **_: Any) -> Dict[str, Any]:
+        text = normalize_text(str(diagnosis_target) + " " + str(diagnosis_params))
+        path = [normalize_text(p) for p in (investigation_path or [])]
+        keywords = root_cause_keywords or []
+        cause_services = keywords[:3] if len(keywords) >= 3 else [
+            "embedding_service_v3",
+            "feature_store",
+            "ab_test_router",
+        ]
+        deployment = keywords[4] if len(keywords) > 4 else "deployment"
         score = 0.0
         breakdown: Dict[str, float] = {}
         causes_found = 0
 
-        # Root cause 1: embedding service ONNX mismatch
-        emb_score = 0.0
-        if any(kw in text for kw in ["embedding service", "embedding", "onnx", "runtime mismatch", "corrupted embedding"]):
+        # Root causes: dynamic services from the selected cascade variant
+        cause_scores: List[float] = []
+        for idx, service in enumerate(cause_services, start=1):
+            service_terms = [service]
+            if idx == 1:
+                service_terms.extend(["embedding service", "embedding"])
+            elif idx == 2:
+                service_terms.extend(["feature store", "featurestore"])
+
+            cause_score = 0.0
+            if contains_any(text, service_terms):
+                cause_score = 0.20
+                causes_found += 1
+            cause_scores.append(cause_score)
+            breakdown[f"identifies_{breakdown_label(service)}_issue"] = cause_score
+
+        # Backwards-compatible aliases for callers that inspect the old keys.
+        emb_score = cause_scores[0]
+        fs_score = cause_scores[1]
+        third_score = cause_scores[2]
+        breakdown["identifies_embedding_service_issue"] = emb_score
+        breakdown["identifies_feature_store_cache_issue"] = fs_score
+        third_is_ab_router = contains_term(normalize_text(cause_services[2]), "ab_test_router")
+        if third_is_ab_router:
+            breakdown["identifies_ab_router_misconfiguration"] = third_score
+        else:
+            breakdown["identifies_third_service_issue"] = third_score
+
+        score += sum(cause_scores)
+
+        # Root cause 1 issue evidence
+        if emb_score == 0.0 and contains_any(
+            text,
+            [
+                "onnx",
+                "runtime mismatch",
+                "corrupted embedding",
+                "cuda",
+                "gpu unavailable",
+                "dimension changed",
+                "downstream consumers incompatible",
+            ],
+        ):
             emb_score = 0.20
             causes_found += 1
-        breakdown["identifies_embedding_service_issue"] = emb_score
-        score += emb_score
+            breakdown[f"identifies_{breakdown_label(cause_services[0])}_issue"] = emb_score
+            breakdown["identifies_embedding_service_issue"] = emb_score
+            score += emb_score
 
-        # Root cause 2: feature store cache TTL
-        fs_score = 0.0
-        if any(kw in text for kw in ["feature store", "featurestore", "cache", "ttl", "stale feature", "cache ttl"]):
+        # Root cause 2 issue evidence
+        if fs_score == 0.0 and contains_any(
+            text,
+            [
+                "cache",
+                "ttl",
+                "stale feature",
+                "redis",
+                "connection pool",
+                "serialized feature reads",
+                "schema version mismatch",
+            ],
+        ):
             fs_score = 0.20
             causes_found += 1
-        breakdown["identifies_feature_store_cache_issue"] = fs_score
-        score += fs_score
+            breakdown[f"identifies_{breakdown_label(cause_services[1])}_issue"] = fs_score
+            breakdown["identifies_feature_store_cache_issue"] = fs_score
+            score += fs_score
 
-        # Root cause 3: ab test router
-        ab_score = 0.0
-        if any(kw in text for kw in ["ab test router", "ab router", "traffic split", "model b", "routing config", "ab test"]):
-            ab_score = 0.20
+        # Root cause 3 issue evidence
+        if third_score == 0.0 and contains_any(
+            text,
+            [
+                "traffic split",
+                "model b",
+                "routing config",
+                "ab test",
+                "wrong model artifact",
+                "staging model weights",
+                "experiment config",
+                "control group",
+            ],
+        ):
+            third_score = 0.20
             causes_found += 1
-        breakdown["identifies_ab_router_misconfiguration"] = ab_score
-        score += ab_score
+            breakdown[f"identifies_{breakdown_label(cause_services[2])}_issue"] = third_score
+            if third_is_ab_router:
+                breakdown["identifies_ab_router_misconfiguration"] = third_score
+            else:
+                breakdown["identifies_third_service_issue"] = third_score
+            score += third_score
 
         # Synthesis: connects all 3 to single deployment
         synthesis_score = 0.0
-        if causes_found >= 3 and any(kw in text for kw in ["single deployment", "same deploy", "deployment v", "deploy rollout", "one change caused"]):
+        if causes_found >= 3 and contains_any(
+            text,
+            [deployment, "single deployment", "same deploy", "deployment v", "deploy rollout", "one change caused"],
+        ):
             synthesis_score = 0.15
         elif causes_found >= 2:
             synthesis_score = 0.05
@@ -71,16 +153,16 @@ class CascadeTaskGrader:
 
         # Remediation: coordinated rollback
         rollback_score = 0.0
-        if any(kw in text for kw in ["rollback", "revert", "coordinated", "all services", "full rollback", "restore all"]):
+        if contains_any(text, ["rollback", "revert", "coordinated", "all services", "full rollback", "restore all"]):
             rollback_score = 0.15 if causes_found >= 3 else 0.07
         breakdown["proposes_coordinated_rollback"] = rollback_score
         score += rollback_score
 
         # Investigation breadth bonus
-        investigated_embedding = any("embedding" in p for p in path)
-        investigated_featurestore = any("feature" in p for p in path)
-        investigated_ab = any("ab" in p or "router" in p for p in path)
-        inv_breadth = sum([investigated_embedding, investigated_featurestore, investigated_ab])
+        inv_breadth = sum(
+            any(contains_term(p, service) for p in path)
+            for service in cause_services
+        )
         inv_bonus = round((inv_breadth / 3) * 0.10, 4)
         breakdown["investigation_breadth_bonus"] = inv_bonus
         score += inv_bonus

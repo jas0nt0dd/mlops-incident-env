@@ -19,9 +19,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
-from environment import MLOpsEnvironment
+try:
+    from .environment import MLOpsEnvironment
+except ImportError:
+    import sys
+
+    sys.path.insert(0, os.path.dirname(__file__))
+    from environment import MLOpsEnvironment
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="MLOps Incident Response Environment",
@@ -149,9 +153,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def main() -> None:
-    import os, uvicorn
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, workers=1, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=port, workers=1, log_level="info")
 
 if __name__ == "__main__":
     main()
