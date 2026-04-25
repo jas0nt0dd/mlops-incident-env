@@ -73,6 +73,23 @@ class StepRequest(BaseModel):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+@app.get("/", tags=["system"])
+def root() -> Dict[str, Any]:
+    """Human-friendly root endpoint for Spaces/browser health probes."""
+    return {
+        "name": "MLOps Incident Response Environment",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "openenv_endpoints": {
+            "reset": "/reset",
+            "step": "/step",
+            "state": "/state",
+            "ws": "/ws",
+        },
+    }
+
+
 @app.get("/health", tags=["system"])
 def health() -> Dict[str, str]:
     return {"status": "ok", "env": "mlops-incident-env", "version": "1.0.0"}
