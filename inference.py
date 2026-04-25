@@ -43,7 +43,7 @@ TASK_STEP_BUDGET = {
 TASK_FORCE_SUBMIT_AT = {
     "easy": 4,
     "medium": 5,
-    "hard": 10,
+    "hard": 6,
     "cascade": 8,
 }
 BLOCKED_ACTIONS = {"request_rollback"}
@@ -433,12 +433,14 @@ def diagnosis_readiness(
     if kind == "data_quality":
         has_pipeline_logs = any(key.startswith("query_logs:") and "pipeline" in key for key in seen)
         has_schema_evidence = any(term in evidence for term in ["schema", "validation failed", "null", "field", "migration"])
-        has_feature_store = any("feature_store" in key for key in seen)
-        if has_pipeline_logs and has_schema_evidence and has_feature_store:
-            return "READY: pipeline/schema evidence and downstream feature-store evidence have been observed."
+        has_downstream = any("feature_store" in key or "model_server" in key for key in seen)
+        if has_pipeline_logs and has_schema_evidence:
+            if has_downstream:
+                return "READY: pipeline/schema evidence and downstream impact evidence have been observed."
+            return "READY: pipeline/schema evidence sufficient. Optionally verify feature_store impact then submit."
         return (
             "NOT READY: before submit_diagnosis, identify the broken data pipeline from logs, "
-            "capture the schema/field/null evidence, and inspect or measure feature_store impact."
+            "capture the schema/field/null evidence, and optionally verify downstream impact in feature_store or model_server."
         )
 
     if kind == "latency":
@@ -897,6 +899,27 @@ def _extract_experiment_name(text: str) -> str:
 
 
 def _extract_feature_name(text: str, defaults: Sequence[str]) -> str:
+    critical_match = re.search(
+        r"(?im)^\s*([a-z][a-z0-9_]+)\s*:\s*psi[^\n\[]{0,40}\[critical[\s_]?drift\]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if critical_match:
+        return critical_match.group(1)
+
+    drifted_match = re.search(
+        r"\b([a-z][a-z0-9_]{4,})\s+drifted\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if drifted_match:
+        return drifted_match.group(1)
+
+    normalized_text = _norm(text)
+    for feature in defaults:
+        if _norm(feature) in normalized_text:
+            return feature
+
     feature_match = re.search(
         r"\b([a-z][a-z0-9_]+)\s*:\s*psi\s*(?:=|:)\s*[0-9]+(?:\.[0-9]+)?",
         text,
@@ -904,10 +927,6 @@ def _extract_feature_name(text: str, defaults: Sequence[str]) -> str:
     )
     if feature_match:
         return feature_match.group(1)
-    normalized_text = _norm(text)
-    for feature in defaults:
-        if _norm(feature) in normalized_text:
-            return feature
     return ""
 
 
@@ -997,15 +1016,15 @@ def fallback_candidates(obs: Obs, valid_components: Sequence[str]) -> List[Tuple
             candidates.extend([
                 ("query_logs", component),
                 ("inspect", component),
-                ("check_metrics", component),
             ])
         for component in components:
             if "feature_store" in component:
                 candidates.extend([
-                    ("query_logs", component),
-                    ("inspect", component),
                     ("check_metrics", component),
+                    ("inspect", component),
                 ])
+        for component in pipeline_components:
+            candidates.append(("check_metrics", component))
 
     if kind == "latency":
         for component in components:
