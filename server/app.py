@@ -47,6 +47,8 @@ app.add_middleware(
 
 # ── Singleton env (one per worker) ────────────────────────────────────────────
 env = MLOpsEnvironment()
+reset_response_cache: Dict[str, Dict[str, Any]] = {}
+step_response_cache: Dict[str, Dict[str, Any]] = {}
 
 
 # ── Request schemas ───────────────────────────────────────────────────────────
@@ -54,6 +56,10 @@ class ResetRequest(BaseModel):
     task_id: str = Field(
         default="easy",
         description="Task difficulty: 'easy' | 'medium' | 'hard'",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Optional idempotency key for retry-safe resets.",
     )
 
 
@@ -69,6 +75,10 @@ class StepRequest(BaseModel):
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
         description="Extra params e.g. {'root_cause': '...', 'fix': '...'}",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Optional idempotency key for retry-safe steps.",
     )
 
 
@@ -99,21 +109,33 @@ def health() -> Dict[str, str]:
 def reset(request: Optional[ResetRequest] = None) -> Dict[str, Any]:
     """Reset environment. validate-submission.sh pings this — must return 200."""
     task_id = request.task_id if request else "easy"
+    request_id = request.request_id if request else None
+    if request_id and request_id in reset_response_cache:
+        return reset_response_cache[request_id]
     if task_id not in ("easy", "medium", "hard", "cascade"):
         task_id = "easy"
     obs = env.reset(task_id=task_id)
-    return obs.to_dict()
+    response = obs.to_dict()
+    step_response_cache.clear()
+    if request_id:
+        reset_response_cache[request_id] = response
+    return response
 
 
 @app.post("/step", tags=["openenv"])
 def step(request: StepRequest) -> Dict[str, Any]:
     """Execute one action, return observation + reward + done."""
+    if request.request_id and request.request_id in step_response_cache:
+        return step_response_cache[request.request_id]
     obs = env.step(
         action_type=request.action_type,
         target=request.target,
         parameters=request.parameters,
     )
-    return obs.to_dict()
+    response = obs.to_dict()
+    if request.request_id:
+        step_response_cache[request.request_id] = response
+    return response
 
 
 @app.get("/state", tags=["openenv"])

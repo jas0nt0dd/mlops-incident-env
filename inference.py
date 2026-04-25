@@ -11,6 +11,8 @@ import json
 import os
 import re
 import textwrap
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
@@ -46,6 +48,9 @@ TASK_FORCE_SUBMIT_AT = {
     "hard": 6,
     "cascade": 8,
 }
+HTTP_RETRY_ATTEMPTS = 3
+HTTP_TIMEOUT_SECONDS = 45
+LLM_RETRY_ATTEMPTS = 3
 BLOCKED_ACTIONS = {"request_rollback"}
 DRIFT_ALLOWED_COMPONENT_HINTS = (
     "feature_store",
@@ -160,25 +165,80 @@ class DirectEnv:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
+    def _post_with_retry(self, path: str, payload: dict) -> Obs:
+        last_error: Optional[Exception] = None
+        request_payload = dict(payload)
+        request_payload.setdefault("request_id", uuid.uuid4().hex)
+        for attempt in range(HTTP_RETRY_ATTEMPTS):
+            try:
+                r = requests.post(
+                    f"{self.base_url}/{path.lstrip('/')}",
+                    json=request_payload,
+                    timeout=HTTP_TIMEOUT_SECONDS,
+                )
+                r.raise_for_status()
+                return _to_obs(r.json())
+            except Exception as e:
+                last_error = e
+                if attempt == HTTP_RETRY_ATTEMPTS - 1:
+                    raise
+                time.sleep(3 + attempt * 2)
+
+        raise RuntimeError("Request retry loop exited unexpectedly") from last_error
+
     def reset(self, task_id: str = "easy") -> Obs:
-        r = requests.post(f"{self.base_url}/reset", json={"task_id": task_id}, timeout=30)
-        r.raise_for_status()
-        return _to_obs(r.json())
+        return self._post_with_retry("reset", {"task_id": task_id})
 
     def step(self, action_type: str, target: str, parameters: dict) -> Obs:
-        r = requests.post(
-            f"{self.base_url}/step",
-            json={"action_type": action_type, "target": target, "parameters": parameters},
-            timeout=30,
+        return self._post_with_retry(
+            "step",
+            {"action_type": action_type, "target": target, "parameters": parameters},
         )
-        r.raise_for_status()
-        return _to_obs(r.json())
 
     def health(self) -> bool:
         try:
             return requests.get(f"{self.base_url}/health", timeout=10).status_code == 200
         except Exception:
             return False
+
+
+def resolve_tasks() -> List[str]:
+    requested = os.getenv("TASKS", "").strip()
+    if not requested:
+        return list(TASKS)
+
+    valid_tasks = set(TASKS)
+    selected = [task.strip().lower() for task in requested.split(",") if task.strip()]
+    filtered = [task for task in selected if task in valid_tasks]
+    return filtered or list(TASKS)
+
+
+def create_completion_with_retry(
+    llm: OpenAI,
+    messages: List[ChatCompletionMessageParam],
+):
+    last_error: Optional[Exception] = None
+    for attempt in range(LLM_RETRY_ATTEMPTS):
+        try:
+            return llm.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages_for_model(messages),
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+            )
+        except Exception as e:
+            last_error = e
+            error_text = _norm(str(e))
+            is_retryable = any(
+                term in error_text
+                for term in ["429", "rate limit", "timeout", "timed out", "connection", "temporary"]
+            )
+            if attempt == LLM_RETRY_ATTEMPTS - 1 or not is_retryable:
+                raise
+            time.sleep(5 + attempt * 5)
+
+    raise RuntimeError("LLM retry loop exited unexpectedly") from last_error
 
 
 # Prompting
@@ -1164,13 +1224,7 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
             parsed: Optional[Tuple[str, str, dict]] = None
 
             try:
-                completion = llm.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages_for_model(messages),
-                    temperature=TEMPERATURE,
-                    max_tokens=MAX_TOKENS,
-                    stream=False,
-                )
+                completion = create_completion_with_retry(llm, messages)
                 raw = completion.choices[0].message.content or ""
                 messages.append(chat_message("assistant", raw))
                 parsed = parse_action(raw, valid_components)
@@ -1263,7 +1317,7 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
             if obs.done:
                 break
 
-        success = final_score > 0.0
+        success = bool(obs.done and final_score > 0.0)
 
     except Exception as e:
         print(f"# run_task error: {e}", flush=True)
@@ -1296,8 +1350,11 @@ def main() -> None:
 
     llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or "dummy-key", timeout=30)
     results = []
+    task_ids = resolve_tasks()
 
-    for task_id in TASKS:
+    print(f"# Tasks: {', '.join(task_ids)}", flush=True)
+
+    for task_id in task_ids:
         results.append(run_task(llm, env, task_id))
 
     print(f"\n# {'=' * 58}", flush=True)
