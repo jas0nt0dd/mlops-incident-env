@@ -960,7 +960,7 @@ def _extract_experiment_name(text: str) -> str:
 
 def _extract_feature_name(text: str, defaults: Sequence[str]) -> str:
     critical_match = re.search(
-        r"(?im)^\s*([a-z][a-z0-9_]+)\s*:\s*psi[^\n\[]{0,40}\[critical[\s_]?drift\]",
+        r"\b([a-z][a-z0-9_]+)\s*:\s*psi\s*(?:=|:)\s*[0-9]+(?:\.[0-9]+)?\s*\[critical[\s_]?drift\]",
         text,
         flags=re.IGNORECASE,
     )
