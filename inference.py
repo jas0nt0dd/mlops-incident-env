@@ -628,7 +628,7 @@ def evidence_text(obs: Obs, history: List[str]) -> str:
 def raw_evidence_text(obs: Obs, history: List[str]) -> str:
     return (
         f"{obs.goal} {obs.alert_summary} "
-        + " ".join(history[-12:])
+        + " ".join(history)
         + " "
         + (obs.action_feedback or "")
     )
@@ -1263,10 +1263,16 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
                 source = "fallback_action_guard"
 
             if action_type != "submit_diagnosis" and f"{action_type}:{target}" in seen:
-                action_type, target, parameters = fallback_action(
-                    obs, valid_components, seen, history, remaining_steps, task_id
-                )
-                source = "fallback_loop_guard"
+                if submit_ready(obs, history, seen, remaining_steps):
+                    action_type, target, parameters = fallback_diagnosis(
+                        obs, valid_components, history
+                    )
+                    source = "fallback_loop_submit"
+                else:
+                    action_type, target, parameters = fallback_action(
+                        obs, valid_components, seen, history, remaining_steps, task_id
+                    )
+                    source = "fallback_loop_guard"
 
             if (
                 not forced_submit
