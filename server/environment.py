@@ -7,6 +7,14 @@ Upgrades over v1:
   - SLA countdown visible in observation (urgency pressure)
   - Cascade failure task (4th task) — multi-root-cause requiring synthesis
   - Step efficiency tracked and passed to graders
+
+Innovation / teaching signal (hackathon “environment” judging):
+  - ground_truth per scenario: primary vs related components, red herrings, incident_pattern
+  - Investigation steps: higher reward for probing primary/root, medium for related, low/zero for
+    irrelevant logs; compare_configs rewards matching the true changed service
+  - Action–pattern bonuses (e.g. check_feature_drift when pattern is feature_drift)
+  - Repeat probes on red-herring components incur a small penalty
+  - Successful submit_diagnosis gets an efficiency bonus when step_count is below an ideal budget
 """
 from __future__ import annotations
 
@@ -80,6 +88,7 @@ class EpisodeState:
     sla_steps: Optional[int] = None
     diagnosis_submitted: bool = False
     relevant_components_visited: List[str] = field(default_factory=list)
+    red_herring_visits: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -124,6 +133,7 @@ class MLOpsEnvironment:
             sla_steps=self.scenario.get("sla_steps"),
             diagnosis_submitted=False,
             relevant_components_visited=[],
+            red_herring_visits={},
         )
         self.cumulative_reward = 0.0
         self.seen_actions = set()
@@ -227,6 +237,43 @@ class MLOpsEnvironment:
     def state_info(self) -> EpisodeState:
         return self.state
 
+    # ─── Ground-truth–aware shaping (richer mid-episode signal for agents / RL) ─
+
+    def _ground_truth(self) -> Dict[str, Any]:
+        return self.scenario.get("ground_truth") or {}
+
+    def _apply_red_herring_shaping(self, target: str, reward: float) -> Tuple[float, str]:
+        rh = list(self._ground_truth().get("red_herrings") or [])
+        if target not in rh:
+            return reward, ""
+        self.state.red_herring_visits[target] = self.state.red_herring_visits.get(target, 0) + 1
+        n = self.state.red_herring_visits[target]
+        if n <= 1:
+            return reward, ""
+        pen = 0.05
+        return reward - pen, f"\n⚠ Repeated probe on distractor '{target}' (−{pen}). Focus on root-cause components."
+
+    def _action_pattern_bonus(self, action_norm: str) -> float:
+        pattern = self._ground_truth().get("incident_pattern") or ""
+        table: Dict[str, Dict[str, float]] = {
+            "feature_drift": {"checkfeaturedrift": 0.08, "checkmetrics": 0.04, "inspect": 0.02, "querylogs": 0.02},
+            "config_regression": {"compareconfigs": 0.08, "inspect": 0.05, "querylogs": 0.04, "checkmetrics": 0.04},
+            "schema_drift": {"querylogs": 0.08, "checkmetrics": 0.04, "inspect": 0.04, "compareconfigs": 0.02},
+            "cascade_multi": {"checkmetrics": 0.06, "querylogs": 0.05, "inspect": 0.04, "compareconfigs": 0.03},
+        }
+        return table.get(pattern, {}).get(action_norm, 0.0)
+
+    def _efficiency_bonus(self, task_id: str, steps_at_submit: int) -> float:
+        """Reward shorter successful investigations (caps in grader total)."""
+        ideal_coef = {
+            "easy": (5, 0.02),
+            "medium": (7, 0.015),
+            "hard": (9, 0.01),
+            "cascade": (12, 0.008),
+        }
+        ideal, coef = ideal_coef.get(task_id, (8, 0.01))
+        return max(0.0, float(ideal - steps_at_submit) * coef)
+
     # ─── Action handlers ─────────────────────────────────────────────────────
 
     def _do_inspect(self, target: str, reward_cfg: Dict) -> Tuple[float, str, List, Dict]:
@@ -240,9 +287,15 @@ class MLOpsEnvironment:
         comp = components[target]
         reward = 0.0
         relevant = reward_cfg.get("relevant_components", [])
+        gt = self._ground_truth()
+        primary = gt.get("primary_component")
         if target in relevant and target not in self.state.relevant_components_visited:
-            reward = reward_cfg.get("explore_relevant_reward", 0.05)
+            base = reward_cfg.get("explore_relevant_reward", 0.05)
+            reward = base * 1.55 if primary and target == primary else base
             self.state.relevant_components_visited.append(target)
+
+        reward += self._action_pattern_bonus("inspect")
+        reward, rh_note = self._apply_red_herring_shaping(target, reward)
 
         has_config = (
             "config_diff" in self.scenario
@@ -258,6 +311,8 @@ class MLOpsEnvironment:
             f"Last updated: {comp.get('last_updated', 'unknown')}\n"
             f"Next steps: query_logs{extra}, check_metrics"
         )
+        if rh_note:
+            feedback += rh_note
         logs = comp.get("logs", [])
         metrics = comp.get("metrics", {})
         return reward, feedback, logs, metrics
@@ -274,9 +329,24 @@ class MLOpsEnvironment:
         logs = comp.get("logs", [])
         reward = 0.0
 
-        key_evidence = reward_cfg.get("key_evidence_logs", [])
-        if target in key_evidence:
-            reward = reward_cfg.get("find_key_evidence_reward", 0.10)
+        key_evidence = list(reward_cfg.get("key_evidence_logs", []) or [])
+        fe = float(reward_cfg.get("find_key_evidence_reward", 0.10))
+        gt = self._ground_truth()
+        primary = gt.get("primary_component")
+        related = set(gt.get("related_components") or [])
+
+        if primary and target == primary:
+            reward = fe
+        elif target in related:
+            reward = fe * 0.58
+        elif target in key_evidence:
+            reward = fe * 0.42
+        elif not primary and target in key_evidence:
+            reward = fe
+
+        reward += self._action_pattern_bonus("querylogs")
+        rh_note = ""
+        reward, rh_note = self._apply_red_herring_shaping(target, reward)
 
         if not logs:
             feedback = f"No logs available for {target}."
@@ -286,6 +356,8 @@ class MLOpsEnvironment:
                 for e in logs
             )
             feedback = f"LOGS — {target.upper()}:\n{lines}"
+        if rh_note:
+            feedback += rh_note
 
         return reward, feedback, logs, {}
 
@@ -297,7 +369,8 @@ class MLOpsEnvironment:
             biz = self.scenario.get("business_metrics", {})
             global_m = self.scenario.get("global_metrics", {})
             combined = {**global_m, **biz}
-            reward = reward_cfg.get("find_business_metrics_reward", 0.10) if biz else 0.0
+            reward = float(reward_cfg.get("find_business_metrics_reward", 0.10) if biz else 0.0)
+            reward += self._action_pattern_bonus("checkmetrics")
             feedback = f"GLOBAL METRICS:\n{self._fmt_dict(combined)}"
             return reward, feedback, [], combined
 
@@ -312,10 +385,24 @@ class MLOpsEnvironment:
         reward = 0.0
 
         relevant = reward_cfg.get("relevant_components", [])
-        if target in relevant:
-            reward = reward_cfg.get("explore_relevant_reward", 0.04)
+        base = float(reward_cfg.get("explore_relevant_reward", 0.04))
+        gt = self._ground_truth()
+        primary = gt.get("primary_component")
+        related = set(gt.get("related_components") or [])
+        if target == primary:
+            reward = base * 1.45
+        elif target in related:
+            reward = base * 0.9
+        elif target in relevant:
+            reward = base * 0.65
+
+        reward += self._action_pattern_bonus("checkmetrics")
+        rh_note = ""
+        reward, rh_note = self._apply_red_herring_shaping(target, reward)
 
         feedback = f"METRICS — {target.upper()}:\n{self._fmt_dict(metrics)}"
+        if rh_note:
+            feedback += rh_note
         return reward, feedback, [], metrics
 
     def _do_compare_configs(self, target: str, reward_cfg: Dict) -> Tuple[float, str, List, Dict]:
@@ -326,7 +413,11 @@ class MLOpsEnvironment:
                 "No config changes recorded for this incident. Try query_logs or check_metrics.",
                 [], {},
             )
-        reward = 0.05  # using compareconfigs is always a good investigative step
+        svc = str(config_diff.get("service") or "")
+        reward = 0.12 if target == svc else 0.02
+        reward += self._action_pattern_bonus("compareconfigs")
+        rh_note = ""
+        reward, rh_note = self._apply_red_herring_shaping(target, reward)
         diff = config_diff
         feedback = (
             f"CONFIG DIFF — {diff.get('service', target).upper()}\n"
@@ -337,6 +428,10 @@ class MLOpsEnvironment:
             f"Changed at: {diff.get('changed_at', 'unknown')}\n"
             f"Summary:    {diff.get('diff_summary', '')}"
         )
+        if target != svc and svc:
+            feedback += f"\n⚠ You queried compare_configs for '{target}' but the recorded change is on '{svc}'."
+        if rh_note:
+            feedback += rh_note
         return reward, feedback, [], diff
 
     def _do_feature_drift(self, reward_cfg: Dict) -> Tuple[float, str, List, Dict]:
@@ -352,6 +447,8 @@ class MLOpsEnvironment:
         reward = reward_cfg.get("find_feature_drift_reward", 0.15)
         if critical:
             reward = reward_cfg.get("find_critical_feature_reward", 0.20)
+
+        reward += self._action_pattern_bonus("checkfeaturedrift")
 
         lines = []
         for fname, fdata in features.items():
@@ -435,7 +532,11 @@ class MLOpsEnvironment:
             result = {"total": 0.0, "breakdown": {}}
 
         final_score = result["total"]
-        breakdown = result.get("breakdown", {})
+        breakdown = dict(result.get("breakdown", {}))
+        eff = self._efficiency_bonus(self.state.task_id, self.state.step_count)
+        final_score = round(min(1.0, float(final_score) + eff), 4)
+        if eff > 0:
+            breakdown["efficiency_bonus"] = round(eff, 4)
         reward = final_score
 
         if final_score >= 0.85:

@@ -57,3 +57,10 @@ dist/
 # Logs
 *.log
 logs/
+
+# Local notes and job artifacts
+imp files/
+md files/
+hf_jobs_ps.txt
+hf_job_last_submit.txt
+hf_job_a10g_small_submit.txt

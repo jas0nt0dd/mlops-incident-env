@@ -304,6 +304,12 @@ class ScenarioGenerator:
             },
             "root_cause": f"{bp}_schema_mismatch",
             "root_cause_keywords": [bp, "schema", field, "migration"],
+            "ground_truth": {
+                "primary_component": bp,
+                "related_components": ["feature_store", "model_server"],
+                "red_herrings": [rh],
+                "incident_pattern": "schema_drift",
+            },
             "reward_config": {
                 "relevant_components": [bp, "feature_store", "model_server"],
                 "key_evidence_logs": [bp, "feature_store"],
@@ -411,8 +417,15 @@ class ScenarioGenerator:
             },
             "root_cause": f"{svc}_{param}_misconfigured",
             "root_cause_keywords": [svc, param, str(new_val), "rollback"],
+            "ground_truth": {
+                "primary_component": svc,
+                "related_components": ["model_server", "load_balancer"],
+                "red_herrings": [rh],
+                "incident_pattern": "config_regression",
+            },
             "reward_config": {
                 "relevant_components": [svc, "load_balancer", "model_server"],
+                "key_evidence_logs": [svc, "model_server", "load_balancer"],
                 "explore_relevant_reward": 0.05,
                 "find_key_evidence_reward": 0.10,
                 "correct_diagnosis_reward": 0.50,
@@ -527,8 +540,15 @@ class ScenarioGenerator:
             },
             "root_cause": f"{feat}_drift_model_staleness_{age}_days",
             "root_cause_keywords": [feat, "drift", "psi", "retrain", exp.lower(), f"{age}_days"],
+            "ground_truth": {
+                "primary_component": "model_server",
+                "related_components": ["ab_testing_service", "feature_store", "monitoring_service"],
+                "red_herrings": ["api_gateway"],
+                "incident_pattern": "feature_drift",
+            },
             "reward_config": {
                 "relevant_components": ["model_server", "ab_testing_service", "monitoring_service"],
+                "key_evidence_logs": ["model_server", "ab_testing_service", "feature_store", "monitoring_service"],
                 "key_evidence_drift": [feat],
                 "explore_relevant_reward": 0.04,
                 "find_feature_drift_reward": 0.15,
@@ -616,8 +636,15 @@ class ScenarioGenerator:
                 c1.replace("_", " "), c2.replace("_", " "), c3.replace("_", " "),
                 "rollback", deploy,
             ],
+            "ground_truth": {
+                "primary_component": c1,
+                "related_components": [c2, c3],
+                "red_herrings": ["model_serving"],
+                "incident_pattern": "cascade_multi",
+            },
             "reward_config": {
                 "relevant_components": [c1, c2, c3],
+                "key_evidence_logs": [c1, c2, c3],
                 "explore_relevant_reward": 0.04,
                 "correct_diagnosis_reward": 0.50,
                 "partial_diagnosis_reward": 0.15,

@@ -3,6 +3,10 @@ inference.py - MLOps Incident Response | LLM-driven agent
 
 The agent reads observations, keeps conversation memory, and decides every action.
 There are no task-specific scripted paths or hidden keyword-injected diagnoses.
+
+Oracle distillation: set ORACLE_TRACE_PATH=traces/oracle.jsonl (optional ORACLE_TRACE_MIN_SCORE=0.9)
+to append successful episode traces. Convert with scripts/oracle_traces_to_sft_jsonl.py then
+SFT_ORACLE_JSONL=... before GRPO in hf_train.py (SFT first, then RL).
 """
 
 from __future__ import annotations
@@ -27,6 +31,10 @@ API_BASE_URL = os.getenv("API_BASE_URL") or "https://api.groq.com/openai/v1"
 API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
 MODEL_NAME = os.getenv("MODEL_NAME") or "llama-3.1-8b-instant"
 HF_SPACE_URL = os.getenv("HF_SPACE_URL", "http://localhost:8000").rstrip("/")
+
+# Append gold-standard oracle trajectories (full message history) for distillation → SFT → GRPO.
+ORACLE_TRACE_PATH = os.getenv("ORACLE_TRACE_PATH", "").strip()
+ORACLE_TRACE_MIN_SCORE = float(os.getenv("ORACLE_TRACE_MIN_SCORE", "0.9"))
 
 ENV_NAME = "mlops-incident-env"
 MAX_STEPS = 12
@@ -1194,8 +1202,44 @@ def messages_for_model(messages: List[ChatCompletionMessageParam]) -> List[ChatC
     return [messages[0], messages[-1]]
 
 
+def _append_oracle_trace(
+    path: str,
+    task_id: str,
+    final_score: float,
+    episode_success: bool,
+    messages: List[ChatCompletionMessageParam],
+    final_diagnosis: Optional[Dict[str, Any]],
+) -> None:
+    """Append one JSON line: full chat + final diagnosis for SFT conversion (hf_train)."""
+    if not path or final_score < ORACLE_TRACE_MIN_SCORE:
+        return
+    if not final_diagnosis or not str(final_diagnosis.get("target", "")).strip():
+        return
+    tdir = os.path.dirname(os.path.abspath(path))
+    if tdir:
+        os.makedirs(tdir, exist_ok=True)
+    row = {
+        "schema": "oracle_trace_v1",
+        "task_id": task_id,
+        "final_score": final_score,
+        "success": episode_success,
+        "messages": [{"role": str(m["role"]), "content": str(m.get("content") or "")} for m in messages],
+        "final_diagnosis": final_diagnosis,
+        "ts": time.time(),
+    }
+    with open(path, "a", encoding="utf-8") as tf:
+        tf.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"[TRACE] oracle trace appended → {path}", flush=True)
+
+
 # Task runner
-def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
+def run_task(
+    llm: OpenAI,
+    env: DirectEnv,
+    task_id: str,
+    *,
+    trace_path: Optional[str] = None,
+) -> dict:
     rewards: List[float] = []
     final_score = 0.0
     success = False
@@ -1203,6 +1247,7 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
     seen: set[str] = set()
     obs = Obs()
     messages: List[ChatCompletionMessageParam] = [chat_message("system", SYSTEM_PROMPT)]
+    last_submit: Optional[Dict[str, Any]] = None
 
     print(f"[START] task={task_id} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
@@ -1292,6 +1337,13 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
 
             seen.add(f"{action_type}:{target}")
 
+            if action_type == "submit_diagnosis":
+                last_submit = {
+                    "target": target,
+                    "root_cause": str(parameters.get("root_cause", "")),
+                    "fix": str(parameters.get("fix", "")),
+                }
+
             try:
                 obs = env.step(action_type, target, parameters)
             except Exception as e:
@@ -1337,6 +1389,8 @@ def run_task(llm: OpenAI, env: DirectEnv, task_id: str) -> dict:
             f"score={final_score:.4f} rewards={rewards_str}",
             flush=True,
         )
+        if trace_path:
+            _append_oracle_trace(trace_path, task_id, final_score, success, messages, last_submit)
 
     return {"task_id": task_id, "final_score": final_score, "score_breakdown": obs.score_breakdown}
 
@@ -1353,15 +1407,22 @@ def main() -> None:
     print(f"# Server: {HF_SPACE_URL}", flush=True)
     print(f"# Model:  {MODEL_NAME}", flush=True)
     print(f"# Temperature: {TEMPERATURE}", flush=True)
+    if ORACLE_TRACE_PATH:
+        print(
+            f"# Oracle traces: ORACLE_TRACE_PATH={ORACLE_TRACE_PATH} "
+            f"(min_score={ORACLE_TRACE_MIN_SCORE})",
+            flush=True,
+        )
 
     llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or "dummy-key", timeout=30)
     results = []
     task_ids = resolve_tasks()
+    trace_path = ORACLE_TRACE_PATH if ORACLE_TRACE_PATH else None
 
     print(f"# Tasks: {', '.join(task_ids)}", flush=True)
 
     for task_id in task_ids:
-        results.append(run_task(llm, env, task_id))
+        results.append(run_task(llm, env, task_id, trace_path=trace_path))
 
     print(f"\n# {'=' * 58}", flush=True)
     print("# LLM AGENT RESULTS", flush=True)
