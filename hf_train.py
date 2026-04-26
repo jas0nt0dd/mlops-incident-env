@@ -50,6 +50,8 @@ Colab / mixed stacks:
   Do not downgrade pydantic for TRL (breaks mcp / google-adk). Use a GPU runtime; if
   collect_definitions / grpo_trainer import errors appear, upgrade trl (bootstrap does)
   or use a clean kernel without conflicting ADK packages.
+  If datasets/huggingface_hub ImportError (HfFolder, InferenceEndpointScalingMetric): bootstrap
+  pins hub>=1.5 (Transformers 5.x) and datasets<4.4 (Unsloth); then Runtime -> Restart and re-run.
 
 Unsloth / Hugging Face hub:
   UNSLOTH_DISABLE_STATISTICS  Set to 1 to skip Unsloth's telemetry snapshot_download (often
@@ -109,11 +111,21 @@ def _maybe_bootstrap() -> None:
     def pip_install(packages: str) -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *packages.split()])
 
-    # Core stack
-    try:
-        import huggingface_hub  # noqa: F401
-    except Exception:
-        pip_install("huggingface_hub")
+    def _hf_hub_and_datasets_import_ok() -> bool:
+        """Colab often ships a broken pair: hf_api expects symbols missing from hub internals."""
+        try:
+            from huggingface_hub import HfApi  # noqa: F401
+            from datasets import Dataset  # noqa: F401
+
+            return True
+        except Exception:
+            return False
+
+    if not _hf_hub_and_datasets_import_ok():
+        # Transformers 5.x requires huggingface_hub>=1.5; Unsloth pins datasets<4.4 (not 4.8.x).
+        pip_install("huggingface_hub>=1.5.0,<2.0 datasets>=3.4.1,<4.4.0")
+    if not _hf_hub_and_datasets_import_ok():
+        pip_install("--force-reinstall --no-cache-dir huggingface_hub>=1.5.0,<2.0 datasets>=3.4.1,<4.4.0")
 
     try:
         import requests  # noqa: F401
@@ -124,11 +136,6 @@ def _maybe_bootstrap() -> None:
         import matplotlib  # noqa: F401
     except Exception:
         pip_install("matplotlib")
-
-    try:
-        import datasets  # noqa: F401
-    except Exception:
-        pip_install("datasets")
 
     def _trl_has_grpo() -> bool:
         import importlib.util

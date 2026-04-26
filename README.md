@@ -22,7 +22,7 @@ A production-grade **OpenEnv** environment where LLM agents act as on-call ML en
 | **Health check** | https://jason9150-mlops-incident-env.hf.space/health |
 | **OpenEnv spec (`openenv.yaml`)** | This repo, root `openenv.yaml` |
 | **GRPO training script + Hub push** | Model repo: https://huggingface.co/jason9150/mlops-incident-agent-grpo-hf (`hf_train.py`, `metrics.json`, `grpo_reward_curves.png` after a run) |
-| **Mini-blog or &lt;2 min video (required)** | **→ [Add your HF Discussion or YouTube URL here before deadline.](https://huggingface.co/jason9150/mlops-incident-agent-grpo-hf/discussions/new)** |
+| **Mini-blog (draft in repo)** | [docs/hf-openenv-mini-blog.md](https://github.com/jas0nt0dd/mlops-incident-env/blob/main/docs/hf-openenv-mini-blog.md) — copy into [new Discussion](https://huggingface.co/jason9150/mlops-incident-agent-grpo-hf/discussions/new) and paste the **Discussion URL** here for judges. |
 
 ---
 
