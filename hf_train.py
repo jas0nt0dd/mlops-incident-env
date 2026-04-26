@@ -169,6 +169,29 @@ def _maybe_bootstrap() -> None:
         # Unsloth pulls the right torch deps on many images; if it fails, user should pin image.
         pip_install("unsloth")
 
+    # HF Jobs / Unsloth Docker: newer transformers needs accelerate>=1.10.1 (parallelism_config).
+    # Never `import accelerate` / find_spec("accelerate...") here — loading accelerate/__init__.py
+    # pulls torchao → CUDA probes and can raise "Error 802: system not yet initialized" before
+    # the job GPU is ready. Use distribution metadata only, then pip if needed.
+    def _accelerate_version_at_least(min_parts: tuple[int, int, int]) -> bool:
+        try:
+            from importlib.metadata import version as dist_version
+
+            raw = dist_version("accelerate").split("+", 1)[0].strip()
+            parts: list[int] = []
+            for seg in raw.split("."):
+                if not seg.isdigit():
+                    break
+                parts.append(int(seg))
+            while len(parts) < 3:
+                parts.append(0)
+            return tuple(parts[:3]) >= min_parts
+        except Exception:
+            return False
+
+    if not _accelerate_version_at_least((1, 10, 1)):
+        pip_install("accelerate>=1.10.1,<2.0")
+
 
 _maybe_bootstrap()
 
