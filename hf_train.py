@@ -19,7 +19,7 @@ Env vars (common):
   RUN_MODE            balanced | hard_focus (default: balanced). Holistic average beats hard-only
                       for judging; use hard_focus only if intentionally chasing hard tier.
   MAX_SEQ_LENGTH      Unsloth context window (default: max(2048, min(8192, MAX_NEW_TOK+1400))).
-  MAX_NEW_TOK         GRPO/eval generation cap (default: 1024 full, 768 fast). Raise MAX_SEQ_LENGTH if OOM.
+  MAX_NEW_TOK         GRPO/eval generation cap (default: 768 full, 512 fast). Override if truncating JSON.
   RUN_PROFILE         full (default) | fast — fast uses smaller data, 1 epoch, shorter
                       generations, skips mid-train eval by default for quick HF Jobs runs.
 
@@ -46,6 +46,18 @@ Stability / iteration:
                       (full state_dict breaks 4-bit bitsandbytes); reload before post-eval.
   MID_EVAL_N_EPS      Episodes per task during mid-train eval (default 2).
 
+Colab / mixed stacks:
+  Do not downgrade pydantic for TRL (breaks mcp / google-adk). Use a GPU runtime; if
+  collect_definitions / grpo_trainer import errors appear, upgrade trl (bootstrap does)
+  or use a clean kernel without conflicting ADK packages.
+
+Unsloth / Hugging Face hub:
+  UNSLOTH_DISABLE_STATISTICS  Set to 1 to skip Unsloth's telemetry snapshot_download (often
+                              hits a 120s TimeoutError on slow Colab egress). Auto-set on Colab
+                              when this var is unset. Set to 0 to force telemetry on anyway.
+  UNSLOTH_USE_MODELSCOPE      Set to 1 and pip install modelscope if HF hub is unreachable
+                              (Unsloth docs); same MODEL_NAME when the checkpoint exists there.
+
 Hard tier (expectations):
   Hard needs multi-component / multi-step reasoning. A 3B one-shot policy often gets ~0 env
   reward, so GRPO may see almost no useful gradient on hard — that is a capacity/architecture
@@ -71,6 +83,18 @@ warnings.filterwarnings(
     message=r".*`max_new_tokens`.*`max_length`.*seem to have been set",
     category=UserWarning,
 )
+
+
+def _prepare_unsloth_env() -> None:
+    """Before any `import unsloth`, avoid Unsloth's HF stats ping that can time out on Colab."""
+    if os.getenv("UNSLOTH_DISABLE_STATISTICS") is not None and str(os.getenv("UNSLOTH_DISABLE_STATISTICS")).strip() != "":
+        return
+    # Colab: /content + Colab marker (same heuristic as Unsloth's own _get_statistics).
+    if os.path.isdir("/content") and os.path.isdir("/opt/colab"):
+        os.environ["UNSLOTH_DISABLE_STATISTICS"] = "1"
+
+
+_prepare_unsloth_env()
 
 
 def _maybe_bootstrap() -> None:
@@ -106,11 +130,31 @@ def _maybe_bootstrap() -> None:
     except Exception:
         pip_install("datasets")
 
+    def _trl_has_grpo() -> bool:
+        import importlib.util
+
+        return importlib.util.find_spec("trl.trainer.grpo_trainer") is not None
+
+    need_trl = False
     try:
         import trl  # noqa: F401
     except Exception:
-        # TRL stack
-        pip_install("trl peft accelerate bitsandbytes transformers")
+        need_trl = True
+    else:
+        if not _trl_has_grpo():
+            # Colab/base images often ship an older trl that imports but has no GRPOTrainer.
+            need_trl = True
+    if need_trl:
+        pip_install("trl>=0.26.0 peft accelerate bitsandbytes transformers")
+
+    # Newer trl imports mergekit from grpo_trainer; Colab/minimal images often lack it.
+    try:
+        import mergekit  # noqa: F401
+    except Exception:
+        try:
+            pip_install("mergekit")
+        except Exception:
+            pass
 
     try:
         import unsloth  # noqa: F401
@@ -164,6 +208,23 @@ HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 HF_SPACE_URL = os.getenv("HF_SPACE_URL", "https://jason9150-mlops-incident-env.hf.space").rstrip("/")
 HF_REPO_ID = os.getenv("HF_REPO_ID", "jason9150/mlops-incident-agent-grpo-hf").strip()
 
+
+def _validate_model_repo_id(repo_id: str) -> str:
+    repo_id = repo_id.strip()
+    if not repo_id:
+        raise SystemExit("HF_REPO_ID is required and must point to a Hugging Face model repo.")
+    lowered = repo_id.lower()
+    if "huggingface.co/spaces/" in lowered or lowered.startswith("spaces/"):
+        raise SystemExit(f"HF_REPO_ID must be a model repo id, not a Space target: {repo_id!r}")
+    if repo_id.startswith("http://") or repo_id.startswith("https://"):
+        raise SystemExit(f"HF_REPO_ID must be a repo id like 'owner/name', not a URL: {repo_id!r}")
+    if repo_id.count("/") != 1:
+        raise SystemExit(f"HF_REPO_ID must look like 'owner/name'; got {repo_id!r}")
+    return repo_id
+
+
+HF_REPO_ID = _validate_model_repo_id(HF_REPO_ID)
+
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct").strip()
 if "llama-3.2" not in MODEL_NAME.lower():
     raise SystemExit(
@@ -196,20 +257,18 @@ def _env_float(key: str, default: float) -> float:
 
 
 if RUN_PROFILE in ("fast", "dev"):
-    # Still need enough tokens for structured JSON + thinking on hard/cascade.
-    _n_eval_d, _eval_every_d, _epochs_d, _max_tok_d, _mid_eps_d = 1, 999_999, 1, 768, 1
+    # Still need enough tokens for structured JSON + thinking on hard/cascade (160 was truncating).
+    _n_eval_d, _eval_every_d, _epochs_d, _max_tok_d, _mid_eps_d = 1, 999_999, 1, 512, 1
     _save_best_d, _save_steps_d = False, 9999
-    _num_gen_d = 2
 else:
     # Mid-train eval uses the same default episode count as post-eval so "best step" is not
     # picked on a noisier (smaller) sample than the final RESULTS table.
-    _n_eval_d, _eval_every_d, _epochs_d, _max_tok_d, _mid_eps_d = 3, 10, 2, 1024, 3
+    _n_eval_d, _eval_every_d, _epochs_d, _max_tok_d, _mid_eps_d = 3, 10, 2, 768, 3
     _save_best_d, _save_steps_d = True, 25
-    _num_gen_d = 6
 
 N_EVAL_EPS = _env_int("N_EVAL_EPS", _n_eval_d)
 EVAL_EVERY = _env_int("EVAL_EVERY", _eval_every_d)
-NUM_GEN = _env_int("NUM_GEN", _num_gen_d)
+NUM_GEN = _env_int("NUM_GEN", 2)
 MAX_NEW_TOK = _env_int("MAX_NEW_TOK", _max_tok_d)
 # Unsloth context: must fit prompt + MAX_NEW_TOK (override with MAX_SEQ_LENGTH if you hit OOM).
 MAX_SEQ_LENGTH = _env_int("MAX_SEQ_LENGTH", max(2048, min(8192, MAX_NEW_TOK + 1400)))

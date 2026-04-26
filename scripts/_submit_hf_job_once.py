@@ -40,6 +40,54 @@ def _read_dotenv_key(key: str) -> str | None:
     return None
 
 
+def _read_config(key: str, default: str = "") -> str:
+    return (os.environ.get(key, "").strip() or (_read_dotenv_key(key) or "").strip() or default)
+
+
+def _optional_job_envs() -> dict[str, str]:
+    keys = [
+        "RUN_MODE",
+        "RUN_PROFILE",
+        "NUM_EPOCHS",
+        "LR",
+        "NUM_GEN",
+        "MAX_NEW_TOK",
+        "MAX_SEQ_LENGTH",
+        "EVAL_GREEDY",
+        "SAVE_BEST_BY_EVAL",
+        "MID_EVAL_N_EPS",
+        "N_EVAL_EPS",
+        "REWARD_MAX_SHAPING",
+        "REWARD_SHAPING_MIN_ENV",
+        "TRAIN_COUNTS_JSON",
+        "SFT_ORACLE_JSONL",
+        "SFT_EPOCHS",
+        "SFT_LR",
+        "SFT_GRAD_ACCUM",
+        "OUTPUT_DIR",
+    ]
+    out: dict[str, str] = {}
+    for key in keys:
+        val = _read_config(key, "")
+        if val != "":
+            out[key] = val
+    return out
+
+
+def _validate_model_repo_id(repo_id: str) -> str:
+    repo_id = repo_id.strip()
+    if not repo_id:
+        raise SystemExit("HF_REPO_ID is required and must point to a Hugging Face model repo.")
+    lowered = repo_id.lower()
+    if "huggingface.co/spaces/" in lowered or lowered.startswith("spaces/"):
+        raise SystemExit(f"HF_REPO_ID must be a model repo id, not a Space target: {repo_id!r}")
+    if repo_id.startswith("http://") or repo_id.startswith("https://"):
+        raise SystemExit(f"HF_REPO_ID must be a repo id like 'owner/name', not a URL: {repo_id!r}")
+    if repo_id.count("/") != 1:
+        raise SystemExit(f"HF_REPO_ID must look like 'owner/name'; got {repo_id!r}")
+    return repo_id
+
+
 def main() -> int:
     upload_only = "--upload-only" in sys.argv
     job_only = "--job-only" in sys.argv
@@ -54,7 +102,10 @@ def main() -> int:
 
     from huggingface_hub import HfApi, create_repo
 
-    repo_id = "jason9150/mlops-incident-agent-grpo-hf"
+    repo_id = _validate_model_repo_id(
+        _read_config("HF_REPO_ID", "jason9150/mlops-incident-agent-grpo-hf")
+    )
+    space_url = _read_config("HF_SPACE_URL", "https://jason9150-mlops-incident-env.hf.space")
     if not job_only:
         create_repo(repo_id, token=token, repo_type="model", exist_ok=True)
         HfApi(token=token).upload_file(
@@ -98,19 +149,31 @@ def main() -> int:
         "--secrets",
         "HF_TOKEN",
         "-e",
-        "HF_SPACE_URL=https://jason9150-mlops-incident-env.hf.space",
+        f"HF_SPACE_URL={space_url}",
         "-e",
-        "HF_REPO_ID=jason9150/mlops-incident-agent-grpo-hf",
+        f"HF_REPO_ID={repo_id}",
         "-e",
         "MODEL_NAME=meta-llama/Llama-3.2-3B-Instruct",
         "-e",
         "AUTO_PIP_INSTALL=1",
         "-v",
-        "hf://jason9150/mlops-incident-agent-grpo-hf:/repo:ro",
+        f"hf://{repo_id}:/repo:ro",
         "unsloth/unsloth:latest",
         "python",
         "/repo/hf_train.py",
     ]
+    optional_envs = _optional_job_envs()
+    if optional_envs:
+        try:
+            vol_idx = args.index("-v")
+        except ValueError:
+            vol_idx = len(args)
+        cmd = args[:vol_idx]
+        for k, v in optional_envs.items():
+            cmd.extend(["-e", f"{k}={v}"])
+        cmd.extend(args[vol_idx:])
+        args = cmd
+        print("Extra job envs:", ", ".join(sorted(optional_envs.keys())))
     p = subprocess.run([hf, *args], capture_output=True, text=True, env=env)
     out = PROJECT / "hf_job_last_submit.txt"
     out.write_text(
