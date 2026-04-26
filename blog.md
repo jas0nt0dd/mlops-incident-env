@@ -30,8 +30,10 @@ This aligns with **Theme #3 — World modeling / professional tasks** in the hac
 - **Training artifacts (metrics + plot links):** https://jason9150-mlops-incident-env.hf.space/training-artifacts  
 - **API:** `POST /reset` with `task_id`, then `POST /step` with `action_type`, `target`, `parameters`.
 
-**HF GPU Job (latest):** https://huggingface.co/jobs/jason9150/69edee5cd70108f37ace012d  
-*(Flavor may follow `HF_JOB_FLAVOR` in your shell if set; see repo `README.md` → Final HF Job.)*
+**Training & compute (what judges can open next):**
+
+- **Google Colab** — [training / repro notebook](https://colab.research.google.com/drive/1BAduA4fXaV6QGvjUWi1VZPdyW1-PdTRr): Unsloth + TRL GRPO against the **same live Space** as production; good for stepping through installs, SFT warm-up, reward curves, and ablations.
+- **Hugging Face GPU Job** — [hosted job `69edb45e…`](https://huggingface.co/jobs/jason9150/69edb45ed70108f37acdfbfa): one **HF Jobs** execution of `hf_train.py` with full logs and hardware metadata on Hugging Face (pairs with Colab as the “cloud GPU” story).
 
 ---
 
