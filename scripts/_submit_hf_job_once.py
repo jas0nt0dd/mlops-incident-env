@@ -175,6 +175,7 @@ def main() -> int:
     subprocess.run([hf, "auth", "login", "--token", token], env=env, capture_output=True, text=True)
 
     # hf jobs run no longer supports -v repo mounts; pull hf_train + oracle SFT from Hub then execute.
+    # Use /tmp (writable); /repo at filesystem root is permission-denied in HF Job containers.
     remote_bootstrap = r"""set -e
 pip install -q huggingface_hub
 python << 'PY'
@@ -182,14 +183,15 @@ from huggingface_hub import hf_hub_download
 import os
 import runpy
 
+root = "/tmp/hf_repo"
 repo = os.environ["HF_REPO_ID"]
 tok = os.environ.get("HF_TOKEN")
-os.makedirs("/repo/data", exist_ok=True)
+os.makedirs(f"{root}/data", exist_ok=True)
 hf_hub_download(
     repo_id=repo,
     filename="hf_train.py",
     repo_type="model",
-    local_dir="/repo",
+    local_dir=root,
     token=tok,
 )
 try:
@@ -197,12 +199,12 @@ try:
         repo_id=repo,
         filename="data/oracle_sft.jsonl",
         repo_type="model",
-        local_dir="/repo",
+        local_dir=root,
         token=tok,
     )
 except Exception:
     pass
-runpy.run_path("/repo/hf_train.py", run_name="__main__")
+runpy.run_path(f"{root}/hf_train.py", run_name="__main__")
 PY
 """
 

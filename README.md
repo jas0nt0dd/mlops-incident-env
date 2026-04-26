@@ -124,7 +124,7 @@ python scripts/oracle_traces_to_sft_jsonl.py traces/oracle.jsonl data/oracle_sft
    python scripts/upload_oracle_artifacts.py
    ```
 
-2. **Push latest `hf_train.py`**, then **submit** (reads `hf_job_final.env` — `HF_JOB_FLAVOR=a100-large`, `SFT_ORACLE_JSONL=/repo/data/oracle_sft.jsonl`, etc.). The job container **downloads** `hf_train.py` and `data/oracle_sft.jsonl` from the model Hub into `/repo` (current `hf jobs run` has no repo volume mount).
+2. **Push latest `hf_train.py`**, then **submit** (reads `hf_job_final.env` — `HF_JOB_FLAVOR=a100-large`, `SFT_ORACLE_JSONL=/tmp/hf_repo/data/oracle_sft.jsonl`, etc.). The job **downloads** Hub files into **`/tmp/hf_repo`** (writable; `/repo` is not writable in HF Jobs).
 
    ```bash
    python scripts/_submit_hf_job_once.py --upload-only
