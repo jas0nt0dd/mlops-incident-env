@@ -116,6 +116,31 @@ python scripts/oracle_traces_to_sft_jsonl.py traces/oracle.jsonl data/oracle_sft
 
 ---
 
+## Final HF Job (A100 + oracle SFT + mentor-visible artifacts)
+
+1. **Upload traces to the model repo** (so the job sees `data/oracle_sft.jsonl` on the volume):
+
+   ```bash
+   python scripts/upload_oracle_artifacts.py
+   ```
+
+2. **Push latest `hf_train.py`**, then **submit** (reads `hf_job_final.env` — `HF_JOB_FLAVOR=a100-large`, `SFT_ORACLE_JSONL=/repo/data/oracle_sft.jsonl`, etc.). The job container **downloads** `hf_train.py` and `data/oracle_sft.jsonl` from the model Hub into `/repo` (current `hf jobs run` has no repo volume mount).
+
+   ```bash
+   python scripts/_submit_hf_job_once.py --upload-only
+   python scripts/_submit_hf_job_once.py --job-only
+   ```
+
+   Job stdout (URL / id) is also written to `hf_job_last_submit.txt`. Paste that **job link** in your blog / submission.
+
+   If the log shows the wrong GPU (e.g. `a10g-large` instead of `a100-large`), your **shell** may have `HF_JOB_FLAVOR` set — it overrides `hf_job_final.env`. Unset it, then run `--job-only` again.
+
+3. **Plots & metrics on Hub:** after the job finishes with `HF_TOKEN`, `hf_train.py` pushes `metrics.json` and `grpo_reward_curves.png` to the model repo.
+
+4. **From the live Space:** open **`/training-artifacts`** on your Space (same host as `/health`) for direct links to those Hub files for judges.
+
+---
+
 ## Repo layout (high signal)
 
 | Path | Role |
@@ -126,6 +151,8 @@ python scripts/oracle_traces_to_sft_jsonl.py traces/oracle.jsonl data/oracle_sft
 | `inference.py` | Baseline / evaluation agent (Space + LLM) |
 | `hf_train.py` | GRPO fine-tune vs live Space; metrics + plot + Hub push |
 | `scripts/_submit_hf_job_once.py` | Upload `hf_train.py` to Hub and/or submit HF Job |
+| `hf_job_final.env` | Last-run HF Job env (A100, SFT path, curriculum, `UNSLOTH_DISABLE_STATISTICS`) |
+| `scripts/upload_oracle_artifacts.py` | Push `traces/oracle.jsonl` + `data/oracle_sft.jsonl` to model repo |
 | `scripts/oracle_traces_to_sft_jsonl.py` | `oracle_trace_v1` JSONL → SFT JSONL |
 
 ---

@@ -3,6 +3,7 @@
 .env.local
 .env.*.local
 *.env
+!hf_job_final.env
 
 # Virtual environments
 venv/

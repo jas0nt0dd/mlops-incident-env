@@ -27,7 +27,11 @@ This aligns with **Theme #3 — World modeling / professional tasks** in the hac
 
 - **Space:** https://jason9150-mlops-incident-env.hf.space  
 - **Health:** https://jason9150-mlops-incident-env.hf.space/health  
+- **Training artifacts (metrics + plot links):** https://jason9150-mlops-incident-env.hf.space/training-artifacts  
 - **API:** `POST /reset` with `task_id`, then `POST /step` with `action_type`, `target`, `parameters`.
+
+**HF GPU Job (latest):** https://huggingface.co/jobs/jason9150/69edee5cd70108f37ace012d  
+*(Flavor may follow `HF_JOB_FLAVOR` in your shell if set; see repo `README.md` → Final HF Job.)*
 
 ---
 

@@ -10,13 +10,19 @@ queue when demand is high. Use a cheaper tier to get a slot sooner:
 
 Omit HF_JOB_FLAVOR to default to t4-medium (usually schedules faster than a10g-small).
 
+Final run (A100 + oracle SFT + env from hf_job_final.env):
+  python scripts/upload_oracle_artifacts.py
+  python scripts/_submit_hf_job_once.py --upload-only
+  python scripts/_submit_hf_job_once.py --job-only
+
 Push only, then submit (no double upload):
   python scripts/_submit_hf_job_once.py --upload-only
-  $env:HF_JOB_FLAVOR = "a100-large"; python scripts/_submit_hf_job_once.py --job-only
+  python scripts/_submit_hf_job_once.py --job-only
 """
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -27,8 +33,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 _DEFAULT_FLAVOR = "t4-medium"
 
 
-def _read_dotenv_key(key: str) -> str | None:
-    path = PROJECT / ".env"
+def _read_key_from_file(key: str, path: Path) -> str | None:
     if not path.is_file():
         return None
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -40,8 +45,31 @@ def _read_dotenv_key(key: str) -> str | None:
     return None
 
 
+def _read_job_env(key: str) -> str | None:
+    """Process env wins, then .env, then hf_job_final.env (last file wins on duplicate keys)."""
+    v = os.environ.get(key, "").strip()
+    if v:
+        return v
+    val: str | None = None
+    for path in (PROJECT / ".env", PROJECT / "hf_job_final.env"):
+        got = _read_key_from_file(key, path)
+        if got is not None:
+            val = got
+    return val
+
+
+def _read_token() -> str | None:
+    """HF_TOKEN only from process env or .env (never commit token into hf_job_final.env)."""
+    v = os.environ.get("HF_TOKEN", "").strip()
+    if v:
+        return v
+    return _read_key_from_file("HF_TOKEN", PROJECT / ".env")
+
+
 def _read_config(key: str, default: str = "") -> str:
-    return (os.environ.get(key, "").strip() or (_read_dotenv_key(key) or "").strip() or default)
+    """Delegate to _read_job_env (process env > hf_job_final.env > .env)."""
+    v = _read_job_env(key)
+    return (v if v is not None else "").strip() or default
 
 
 def _optional_job_envs() -> dict[str, str]:
@@ -65,6 +93,7 @@ def _optional_job_envs() -> dict[str, str]:
         "SFT_LR",
         "SFT_GRAD_ACCUM",
         "OUTPUT_DIR",
+        "UNSLOTH_DISABLE_STATISTICS",
     ]
     out: dict[str, str] = {}
     for key in keys:
@@ -95,9 +124,9 @@ def main() -> int:
         print("Use either --upload-only or --job-only, not both.", file=sys.stderr)
         return 2
 
-    token = _read_dotenv_key("HF_TOKEN")
+    token = _read_token()
     if not token:
-        print("HF_TOKEN missing in .env", file=sys.stderr)
+        print("HF_TOKEN missing in .env or environment", file=sys.stderr)
         return 1
 
     from huggingface_hub import HfApi, create_repo
@@ -120,11 +149,7 @@ def main() -> int:
         print("Done (--upload-only); no job submitted.")
         return 0
 
-    flavor = (
-        os.environ.get("HF_JOB_FLAVOR", "").strip()
-        or _read_dotenv_key("HF_JOB_FLAVOR")
-        or _DEFAULT_FLAVOR
-    )
+    flavor = _read_config("HF_JOB_FLAVOR", _DEFAULT_FLAVOR)
     print(f"Using HF Job flavor: {flavor} (set HF_JOB_FLAVOR in .env or env to override)")
     if not str(flavor).lower().startswith("cpu"):
         print(
@@ -133,9 +158,54 @@ def main() -> int:
             "CPU jobs (e.g. cpu-basic) can still complete — use Billing → Compute to verify balance."
         )
 
-    hf = str(PROJECT / ".venv" / "Scripts" / "hf.exe")
+    def _find_hf_cli() -> str | None:
+        w = shutil.which("hf")
+        if w:
+            return w
+        for p in (PROJECT / ".venv" / "Scripts" / "hf.exe", PROJECT / ".venv" / "bin" / "hf"):
+            if p.is_file():
+                return str(p)
+        return None
+
+    hf = _find_hf_cli()
+    if not hf:
+        print("hf CLI not found. Install huggingface_hub[cli] or add hf to PATH.", file=sys.stderr)
+        return 1
     env = {**os.environ, "HUGGINGFACE_HUB_TOKEN": token}
     subprocess.run([hf, "auth", "login", "--token", token], env=env, capture_output=True, text=True)
+
+    # hf jobs run no longer supports -v repo mounts; pull hf_train + oracle SFT from Hub then execute.
+    remote_bootstrap = r"""set -e
+pip install -q huggingface_hub
+python << 'PY'
+from huggingface_hub import hf_hub_download
+import os
+import runpy
+
+repo = os.environ["HF_REPO_ID"]
+tok = os.environ.get("HF_TOKEN")
+os.makedirs("/repo/data", exist_ok=True)
+hf_hub_download(
+    repo_id=repo,
+    filename="hf_train.py",
+    repo_type="model",
+    local_dir="/repo",
+    token=tok,
+)
+try:
+    hf_hub_download(
+        repo_id=repo,
+        filename="data/oracle_sft.jsonl",
+        repo_type="model",
+        local_dir="/repo",
+        token=tok,
+    )
+except Exception:
+    pass
+runpy.run_path("/repo/hf_train.py", run_name="__main__")
+PY
+"""
+
     args = [
         "jobs",
         "run",
@@ -156,22 +226,22 @@ def main() -> int:
         "MODEL_NAME=meta-llama/Llama-3.2-3B-Instruct",
         "-e",
         "AUTO_PIP_INSTALL=1",
-        "-v",
-        f"hf://{repo_id}:/repo:ro",
         "unsloth/unsloth:latest",
-        "python",
-        "/repo/hf_train.py",
+        "bash",
+        "-lc",
+        remote_bootstrap,
     ]
     optional_envs = _optional_job_envs()
+    optional_envs.pop("HF_JOB_FLAVOR", None)
     if optional_envs:
         try:
-            vol_idx = args.index("-v")
+            insert_at = args.index("unsloth/unsloth:latest")
         except ValueError:
-            vol_idx = len(args)
-        cmd = args[:vol_idx]
+            insert_at = len(args)
+        cmd = args[:insert_at]
         for k, v in optional_envs.items():
             cmd.extend(["-e", f"{k}={v}"])
-        cmd.extend(args[vol_idx:])
+        cmd.extend(args[insert_at:])
         args = cmd
         print("Extra job envs:", ", ".join(sorted(optional_envs.keys())))
     p = subprocess.run([hf, *args], capture_output=True, text=True, env=env)

@@ -91,6 +91,7 @@ def root() -> Dict[str, Any]:
         "status": "ok",
         "docs": "/docs",
         "health": "/health",
+        "training_artifacts": "/training-artifacts",
         "openenv_endpoints": {
             "reset": "/reset",
             "step": "/step",
@@ -103,6 +104,19 @@ def root() -> Dict[str, Any]:
 @app.get("/health", tags=["system"])
 def health() -> Dict[str, str]:
     return {"status": "ok", "env": "mlops-incident-env", "version": "1.0.0"}
+
+
+@app.get("/training-artifacts", tags=["system"])
+def training_artifacts() -> Dict[str, str]:
+    """Hub links for GRPO metrics/plot (after a job or local run pushed with HF_TOKEN)."""
+    repo = os.getenv("HF_TRAINING_ARTIFACTS_REPO", "jason9150/mlops-incident-agent-grpo-hf").strip()
+    base = f"https://huggingface.co/{repo}"
+    return {
+        "model_repo": base,
+        "metrics_json": f"{base}/resolve/main/metrics.json",
+        "reward_plot_png": f"{base}/resolve/main/grpo_reward_curves.png",
+        "hf_train_py": f"{base}/resolve/main/hf_train.py",
+    }
 
 
 @app.post("/reset", tags=["openenv"])
