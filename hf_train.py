@@ -74,6 +74,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 import time
 import warnings
 from typing import Any, Dict, List, Tuple
@@ -97,6 +98,12 @@ def _prepare_unsloth_env() -> None:
 
 
 _prepare_unsloth_env()
+
+# HF Jobs can end up with mixed torch package state after bootstrap pip installs.
+# Disabling TorchDynamo avoids compile-time import failures in GRPO internals
+# (e.g. torch.fx.operator_schemas symbol mismatches) and favors stability.
+if os.getenv("TORCHDYNAMO_DISABLE", "").strip() == "":
+    os.environ["TORCHDYNAMO_DISABLE"] = "1"
 
 
 def _maybe_bootstrap() -> None:
@@ -154,14 +161,18 @@ def _maybe_bootstrap() -> None:
     if need_trl:
         pip_install("trl>=0.26.0 peft accelerate bitsandbytes transformers")
 
-    # Newer trl imports mergekit from grpo_trainer; Colab/minimal images often lack it.
+    # Newer trl may import mergekit from grpo_trainer. Full `pip install mergekit` pins
+    # accelerate~=1.6 and fights transformers; --no-deps avoids downgrading accelerate.
     try:
         import mergekit  # noqa: F401
     except Exception:
         try:
-            pip_install("mergekit")
+            pip_install("mergekit --no-deps")
         except Exception:
-            pass
+            try:
+                pip_install("mergekit")
+            except Exception:
+                pass
 
     try:
         import unsloth  # noqa: F401
@@ -190,7 +201,15 @@ def _maybe_bootstrap() -> None:
             return False
 
     if not _accelerate_version_at_least((1, 10, 1)):
-        pip_install("accelerate>=1.10.1,<2.0")
+        pip_install("--force-reinstall --no-cache-dir accelerate>=1.10.1,<2.0")
+    else:
+        # Hub job bootstrap copies this file under /tmp/hf_repo; mergekit / pip can leave
+        # accelerate metadata new but site-packages mixed (ImportError from parallelism_config).
+        try:
+            if "/tmp/hf_repo" in Path(__file__).resolve().as_posix():
+                pip_install("--force-reinstall --no-cache-dir accelerate>=1.10.1,<2.0")
+        except Exception:
+            pass
 
 
 _maybe_bootstrap()
