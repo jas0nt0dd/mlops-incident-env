@@ -22,7 +22,7 @@ A production-grade **OpenEnv** environment where LLM agents act as on-call ML en
 | **Health check** | https://jason9150-mlops-incident-env.hf.space/health |
 | **OpenEnv spec (`openenv.yaml`)** | This repo, root `openenv.yaml` |
 | **GRPO training script + Hub push** | Model repo: https://huggingface.co/jason9150/mlops-incident-agent-grpo-hf (`hf_train.py`, `metrics.json`, `grpo_reward_curves.png` after a run) |
-| **Google Colab (training / repro)** | [Notebook](https://colab.research.google.com/drive/1BAduA4fXaV6QGvjUWi1VZPdyW1-PdTRr) — end-to-end **Unsloth + TRL GRPO** against the live Space (`HF_SPACE_URL`): install deps, optional oracle SFT, train, eval, plots. Primary artifact for hackathon “training in Colab” expectations. |
+| **Google Colab (training / repro)** | [Notebook](https://colab.research.google.com/drive/1BAduA4fXaV6QGvjUWi1VZPdyW1-PdTRr?authuser=1#) — end-to-end **Unsloth + TRL GRPO** against the live Space (`HF_SPACE_URL`): install deps, optional oracle SFT, train, eval, plots. Primary artifact for hackathon “training in Colab” expectations. |
 | **Hugging Face GPU Job (hosted run)** | [Job `69edb45e…`](https://huggingface.co/jobs/jason9150/69edb45ed70108f37acdfbfa) — **HF Jobs** run of `hf_train.py` on HF-managed GPU (logs, hardware, and timeline on the Job page). Complements Colab: same script path, different compute surface. |
 | **Mini-blog (HF Space)** | Draft: [blog.md](https://github.com/jas0nt0dd/mlops-incident-env/blob/main/blog.md) — **publish** on [Space → New Discussion](https://huggingface.co/spaces/jason9150/mlops-incident-env/discussions/new) (not the model repo). Paste the **Discussion URL** in your submission README row. |
 
